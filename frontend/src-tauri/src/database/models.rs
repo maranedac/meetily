@@ -9,6 +9,9 @@ pub struct MeetingModel {
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     pub folder_path: Option<String>,
+    // "completed" (has a transcript) | "pending" (audio-only, "record only" mode,
+    // not yet transcribed - see audio/retranscription.rs and TranscriptButtonGroup.tsx)
+    pub transcription_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
@@ -35,6 +38,13 @@ pub struct Transcript {
     pub audio_start_time: Option<f64>,
     pub audio_end_time: Option<f64>,
     pub duration: Option<f64>,
+    // Which audio source this segment came from: "mic" (the user) or "system"
+    // (everyone else). None for legacy rows saved before this was tracked.
+    pub speaker: Option<String>,
+    // Individual speaker identity within "system" (e.g. "Speaker 2"), set only when
+    // offline diarization has run for this meeting (see diarization_engine/). None
+    // for "mic" rows and for any meeting where diarization hasn't run.
+    pub speaker_label: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

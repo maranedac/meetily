@@ -22,6 +22,16 @@ export interface RecordingStoppedPayload {
   meeting_name?: string;
 }
 
+export interface RecordingStartedPayload {
+  message: string;
+  devices?: string[];
+  workers?: number;
+  // Whether this session is transcribing live (VAD/Whisper alongside capture) or
+  // "record only" (transcribe later on demand) - read from persisted preferences
+  // server-side when the recording started.
+  transcribe_live?: boolean;
+}
+
 /**
  * Recording Service
  * Singleton service for managing recording lifecycle operations
@@ -112,8 +122,10 @@ export class RecordingService {
    * @param callback - Function to call when recording starts
    * @returns Promise that resolves to unlisten function
    */
-  async onRecordingStarted(callback: () => void): Promise<UnlistenFn> {
-    return listen('recording-started', callback);
+  async onRecordingStarted(callback: (payload: RecordingStartedPayload) => void): Promise<UnlistenFn> {
+    return listen<RecordingStartedPayload>('recording-started', (event) => {
+      callback(event.payload);
+    });
   }
 
   /**

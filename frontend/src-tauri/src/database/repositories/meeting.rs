@@ -62,7 +62,7 @@ impl MeetingsRepository {
 
         // Get meeting details
         let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?")
+            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path, transcription_status FROM meetings WHERE id = ?")
                 .bind(meeting_id)
                 .fetch_optional(&mut *transaction)
                 .await?;
@@ -92,6 +92,8 @@ impl MeetingsRepository {
                     audio_start_time: t.audio_start_time,
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
+                    speaker: t.speaker,
+                    speaker_label: t.speaker_label,
                 })
                 .collect::<Vec<_>>();
 
@@ -120,7 +122,7 @@ impl MeetingsRepository {
         }
 
         let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?")
+            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path, transcription_status FROM meetings WHERE id = ?")
                 .bind(meeting_id)
                 .fetch_optional(pool)
                 .await?;

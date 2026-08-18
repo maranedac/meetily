@@ -22,6 +22,9 @@ pub struct TranscriptSegment {
     pub display_time: String,   // Formatted time for display like "[02:15]"
     pub confidence: f32,
     pub sequence_id: u64,
+    // Which audio source this segment came from: "mic" (you) or "system" (others)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 /// Meeting metadata structure
@@ -46,9 +49,22 @@ pub struct DeviceInfo {
     pub system_audio: Option<String>,
 }
 
+/// Senders returned by `RecordingSaver::start_accumulation` — one for the mixed
+/// (playback) track, plus optional raw per-source tracks used only in "record only"
+/// mode (`transcribe_live == false`) so a later on-demand transcription can still
+/// attribute segments to mic vs system.
+pub struct RecordingChannels {
+    pub mixed: mpsc::UnboundedSender<AudioChunk>,
+    pub mic_raw: Option<mpsc::UnboundedSender<AudioChunk>>,
+    pub system_raw: Option<mpsc::UnboundedSender<AudioChunk>>,
+}
+
 /// New recording saver using incremental saving strategy
 pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
+    // Raw per-source savers, only created in "record only" mode (see start_accumulation)
+    mic_incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
+    system_incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
     meeting_folder: Option<PathBuf>,
     meeting_name: Option<String>,
     metadata: Option<MeetingMetadata>,
@@ -61,6 +77,8 @@ impl RecordingSaver {
     pub fn new() -> Self {
         Self {
             incremental_saver: None,
+            mic_incremental_saver: None,
+            system_incremental_saver: None,
             meeting_folder: None,
             meeting_name: None,
             metadata: None,
@@ -129,15 +147,50 @@ impl RecordingSaver {
             display_time: "[00:00]".to_string(),
             confidence: 1.0,
             sequence_id: 0,
+            speaker: None,
         };
         self.add_transcript_segment(segment);
+    }
+
+    /// Spawn a background task that forwards audio chunks into an IncrementalAudioSaver
+    /// until `is_saving` flips false. Returns the sender to feed chunks into. Used for the
+    /// raw mic/system tracks (record-only mode); the mixed/playback track has its own
+    /// inline task in `start_accumulation` below since it also handles the auto_save-off
+    /// (discard) case.
+    fn spawn_track_accumulator(
+        saver_arc: Arc<AsyncMutex<IncrementalAudioSaver>>,
+        is_saving: Arc<Mutex<bool>>,
+        track_name: &'static str,
+    ) -> mpsc::UnboundedSender<AudioChunk> {
+        let (sender, mut receiver) = mpsc::unbounded_channel::<AudioChunk>();
+        tokio::spawn(async move {
+            info!("Recording saver accumulation task started for '{}' track", track_name);
+            while let Some(chunk) = receiver.recv().await {
+                let should_continue = if let Ok(saving) = is_saving.lock() { *saving } else { false };
+                if !should_continue {
+                    break;
+                }
+                let mut saver_guard = saver_arc.lock().await;
+                if let Err(e) = saver_guard.add_chunk(chunk) {
+                    error!("Failed to add chunk to '{}' incremental saver: {}", track_name, e);
+                }
+            }
+            info!("Recording saver accumulation task ended for '{}' track", track_name);
+        });
+        sender
     }
 
     /// Start accumulation with optional incremental saving
     ///
     /// # Arguments
-    /// * `auto_save` - If true, creates checkpoints and enables saving. If false, audio chunks are discarded.
-    pub fn start_accumulation(&mut self, auto_save: bool) -> mpsc::UnboundedSender<AudioChunk> {
+    /// * `auto_save` - If true, creates checkpoints and enables saving (including raw
+    ///   mic/system tracks, see below). If false, audio chunks are discarded.
+    /// * `transcribe_live` - Whether live VAD+transcription is running alongside capture
+    ///   ("record only" mode passes false). Only affects logging here; raw mic/system
+    ///   tracks are persisted either way (when `auto_save` is true) so both offline
+    ///   re-transcription ("Enhance") and on-demand diarization ("Speakers") have real
+    ///   per-source audio to work with regardless of how the meeting was recorded.
+    pub fn start_accumulation(&mut self, auto_save: bool, transcribe_live: bool) -> RecordingChannels {
         if auto_save {
             info!("Initializing incremental audio saver for recording (auto-save ENABLED)");
         } else {
@@ -214,12 +267,64 @@ impl RecordingSaver {
             });
         }
 
+        // Always persist raw mic/system tracks (in addition to the mixed/playback track)
+        // whenever audio is actually being saved (auto_save), regardless of transcribe_live.
+        //
+        // This used to be gated on `!transcribe_live` (record-only mode) - live-transcribed
+        // meetings only got a SYSTEM-ONLY raw track, on the theory that mic attribution
+        // already happened in real time so duplicating it to disk was pure cost with no
+        // benefit. That assumption broke once "Enhance" (offline re-transcription with a
+        // different model/language, retranscription.rs::run_retranscription) shipped:
+        // Enhance needs raw per-source *audio*, not the old transcript's text, so without a
+        // mic.* file it fell back to the single mixed audio.mp4 with speaker: None for every
+        // segment - silently discarding the mic/system attribution the live pass had already
+        // established (both find_dual_audio_files() halves are required, see
+        // retranscription.rs). Saving both tracks unconditionally makes that fallback
+        // unreachable in practice: Enhance now gets true dual-track separation for every
+        // meeting, live-transcribed or not.
+        //
+        // (Existing meetings recorded before this change won't have a mic.* file
+        // retroactively - for those, use the "Speakers" on-demand diarization action
+        // instead, which only needs the system.* track and already worked either way.)
+        let mut mic_raw = None;
+        let mut system_raw = None;
+        if auto_save {
+            if let Some(folder) = self.meeting_folder.clone() {
+                match IncrementalAudioSaver::new(folder.clone(), 48000, "mic") {
+                    Ok(saver) => {
+                        let saver_arc = Arc::new(AsyncMutex::new(saver));
+                        self.mic_incremental_saver = Some(saver_arc.clone());
+                        mic_raw = Some(Self::spawn_track_accumulator(saver_arc, self.is_saving.clone(), "mic"));
+                    }
+                    Err(e) => error!("Failed to initialize mic raw-track saver: {}", e),
+                }
+                match IncrementalAudioSaver::new(folder, 48000, "system") {
+                    Ok(saver) => {
+                        let saver_arc = Arc::new(AsyncMutex::new(saver));
+                        self.system_incremental_saver = Some(saver_arc.clone());
+                        system_raw = Some(Self::spawn_track_accumulator(saver_arc, self.is_saving.clone(), "system"));
+                    }
+                    Err(e) => error!("Failed to initialize system raw-track saver: {}", e),
+                }
+                info!(
+                    "✅ Raw mic/system tracks enabled for later on-demand transcription (transcribe_live: {})",
+                    transcribe_live
+                );
+            } else {
+                warn!("Cannot enable raw mic/system tracks: no meeting folder (auto_save may have failed to initialize)");
+            }
+        }
+
         // Set saving flag
         if let Ok(mut is_saving) = self.is_saving.lock() {
             *is_saving = true;
         }
 
-        sender
+        RecordingChannels {
+            mixed: sender,
+            mic_raw,
+            system_raw,
+        }
     }
 
     /// Initialize meeting folder structure and metadata
@@ -236,7 +341,7 @@ impl RecordingSaver {
 
         // Only initialize incremental saver if checkpoints are needed (auto_save is true)
         if create_checkpoints {
-            let incremental_saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000)?;
+            let incremental_saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000, "audio")?;
             self.incremental_saver = Some(Arc::new(AsyncMutex::new(incremental_saver)));
             info!("✅ Incremental audio saver initialized for meeting: {}", meeting_name);
         } else {
@@ -396,6 +501,23 @@ impl RecordingSaver {
             error!("No incremental saver initialized - cannot save recording");
             return Err("No incremental saver initialized".to_string());
         };
+
+        // Finalize raw mic/system tracks if present (record-only mode). Best-effort: a
+        // failure here shouldn't fail the whole stop — the mixed audio.mp4 above is what
+        // matters most, and without these two the meeting simply can't be transcribed
+        // later with speaker attribution (still recoverable by re-recording).
+        for (label, saver_opt) in [
+            ("mic", &self.mic_incremental_saver),
+            ("system", &self.system_incremental_saver),
+        ] {
+            if let Some(saver_arc) = saver_opt {
+                let mut saver = saver_arc.lock().await;
+                match saver.finalize().await {
+                    Ok(path) => info!("✅ Successfully finalized '{}' raw track: {}", label, path.display()),
+                    Err(e) => error!("❌ Failed to finalize '{}' raw track: {}", label, e),
+                }
+            }
+        }
 
         // Save final transcripts.json with validation
         if let Some(folder) = &self.meeting_folder {

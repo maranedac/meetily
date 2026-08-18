@@ -117,6 +117,64 @@ pub fn get_template(template_id: &str) -> Result<Template, String> {
     validate_and_parse_template(&json_content)
 }
 
+/// Checks whether a template id has a corresponding file in the user's
+/// custom templates directory (i.e. it was created/edited by the user,
+/// as opposed to being built-in or bundled with the app).
+///
+/// # Arguments
+/// * `template_id` - Template identifier (without .json extension)
+pub fn is_custom_template(template_id: &str) -> bool {
+    match get_custom_templates_dir() {
+        Some(custom_dir) => custom_dir.join(format!("{}.json", template_id)).exists(),
+        None => false,
+    }
+}
+
+/// Saves (creates or overwrites) a template in the user's custom templates
+/// directory, creating the directory if needed.
+///
+/// # Arguments
+/// * `template_id` - Template identifier (without .json extension)
+/// * `json_content` - Raw, already-validated JSON string to write
+pub fn save_custom_template(template_id: &str, json_content: &str) -> Result<(), String> {
+    let custom_dir = get_custom_templates_dir()
+        .ok_or_else(|| "Could not resolve the custom templates directory".to_string())?;
+
+    std::fs::create_dir_all(&custom_dir)
+        .map_err(|e| format!("Failed to create custom templates directory: {}", e))?;
+
+    let template_path = custom_dir.join(format!("{}.json", template_id));
+    std::fs::write(&template_path, json_content)
+        .map_err(|e| format!("Failed to write template file: {}", e))?;
+
+    info!("Saved custom template '{}' to {:?}", template_id, template_path);
+    Ok(())
+}
+
+/// Deletes a template from the user's custom templates directory.
+///
+/// Only templates that live in the custom directory can be deleted -
+/// built-in and bundled templates are not affected.
+///
+/// # Arguments
+/// * `template_id` - Template identifier (without .json extension)
+pub fn delete_custom_template(template_id: &str) -> Result<(), String> {
+    let custom_dir = get_custom_templates_dir()
+        .ok_or_else(|| "Could not resolve the custom templates directory".to_string())?;
+
+    let template_path = custom_dir.join(format!("{}.json", template_id));
+
+    if !template_path.exists() {
+        return Err(format!("Custom template '{}' not found", template_id));
+    }
+
+    std::fs::remove_file(&template_path)
+        .map_err(|e| format!("Failed to delete template file: {}", e))?;
+
+    info!("Deleted custom template '{}'", template_id);
+    Ok(())
+}
+
 /// Validate and parse template JSON
 ///
 /// # Arguments

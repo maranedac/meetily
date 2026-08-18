@@ -34,17 +34,22 @@ export class StorageService {
    * @param meetingTitle - Title of the meeting
    * @param transcripts - Array of transcript segments
    * @param folderPath - Optional folder path for audio file
+   * @param transcriptionStatus - 'pending' for a "record only" meeting saved with no
+   *   transcript yet (offer the "Transcribe" action later); omit for the normal flow
+   *   (defaults to 'completed' on the backend)
    * @returns Promise with { meeting_id: string }
    */
   async saveMeeting(
     meetingTitle: string,
     transcripts: Transcript[],
-    folderPath: string | null
+    folderPath: string | null,
+    transcriptionStatus?: string
   ): Promise<SaveMeetingResponse> {
     return invoke<SaveMeetingResponse>('api_save_transcript', {
       meetingTitle,
       transcripts,
       folderPath,
+      transcriptionStatus,
     });
   }
 

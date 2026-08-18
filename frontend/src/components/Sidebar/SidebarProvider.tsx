@@ -143,17 +143,16 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   }, [meetings]);
 
   // Function to handle recording toggle from sidebar
+  // NOTE: This only navigates to the recording view - it no longer auto-starts
+  // recording. Starting requires an explicit mode choice (transcribe live vs
+  // record-only) on the central record button in RecordingControls, since that
+  // choice can't be made from here. Tray-triggered starts (request-recording-toggle
+  // in layout.tsx) still auto-start directly with the current default preference -
+  // that path is unrelated to this button and dispatches its own event.
   const handleRecordingToggle = () => {
     if (!isRecording) {
-      // Check if already on home page
-      if (pathname === '/') {
-        // Already on home - trigger recording directly via custom event
-        console.log('Triggering recording from sidebar (already on home page)');
-        window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
-      } else {
-        // Not on home - navigate and use auto-start mechanism
-        console.log('Navigating to home page with auto-start flag');
-        sessionStorage.setItem('autoStartRecording', 'true');
+      if (pathname !== '/') {
+        console.log('Navigating to home page to start recording');
         router.push('/');
       }
 

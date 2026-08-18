@@ -191,6 +191,7 @@ export default function PageContent({
           meetingId={meeting.id}
           meetingFolderPath={meeting.folder_path}
           onRefetchTranscripts={onRefetchTranscripts}
+          transcriptionStatus={meeting.transcription_status}
         />
         <SummaryPanel
           meeting={meeting}
@@ -224,6 +225,7 @@ export default function PageContent({
           availableTemplates={templates.availableTemplates}
           selectedTemplate={templates.selectedTemplate}
           onTemplateSelect={templates.handleTemplateSelection}
+          onTemplatesChanged={templates.refetchTemplates}
           isModelConfigLoading={false}
           onOpenModelSettings={handleRegisterModalOpen}
         />

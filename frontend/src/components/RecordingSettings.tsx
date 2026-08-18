@@ -12,6 +12,7 @@ export interface RecordingPreferences {
   file_format: string;
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
+  transcribe_live: boolean;
 }
 
 interface RecordingSettingsProps {
@@ -24,7 +25,8 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     auto_save: true,
     file_format: 'mp4',
     preferred_mic_device: null,
-    preferred_system_device: null
+    preferred_system_device: null,
+    transcribe_live: true
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -75,6 +77,16 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
 
     // Track auto-save setting change
     await Analytics.track('auto_save_recording_toggled', {
+      enabled: enabled.toString()
+    });
+  };
+
+  const handleTranscribeLiveToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, transcribe_live: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences);
+
+    await Analytics.track('transcribe_live_toggled', {
       enabled: enabled.toString()
     });
   };
@@ -212,6 +224,22 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           </div>
         </div>
       )}
+
+      {/* Transcribe Live Toggle */}
+      <div className="flex items-center justify-between p-4 border rounded-lg">
+        <div className="flex-1">
+          <div className="font-medium">Transcribe While Recording</div>
+          <div className="text-sm text-gray-600">
+            When off, meetings are recorded audio-only (lower CPU usage while recording) — use the
+            "Transcribe" button on the meeting page whenever you want the transcript.
+          </div>
+        </div>
+        <Switch
+          checked={preferences.transcribe_live}
+          onCheckedChange={handleTranscribeLiveToggle}
+          disabled={saving}
+        />
+      </div>
 
       {/* Recording Notification Toggle */}
       <div className="flex items-center justify-between p-4 border rounded-lg">

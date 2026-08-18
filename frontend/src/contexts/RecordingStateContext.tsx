@@ -34,6 +34,10 @@ interface RecordingState {
   // NEW: Lifecycle status
   status: RecordingStatus;
   statusMessage?: string;  // Optional message for current status
+
+  // Whether the current/last recording session is transcribing live or "record only"
+  // (set from the recording-started event payload - see RecordingSettings.tsx toggle)
+  isTranscribeLive: boolean;
 }
 
 interface RecordingStateContextType extends RecordingState {
@@ -65,6 +69,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     activeDuration: null,
     status: RecordingStatus.IDLE,  // NEW: Initialize with IDLE status
     statusMessage: undefined,       // NEW: No message initially
+    isTranscribeLive: true,         // Default until a recording-started event says otherwise
   });
 
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -137,14 +142,16 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     const setupListeners = async () => {
       try {
         // Recording started
-        const unlistenStarted = await recordingService.onRecordingStarted(() => {
-          console.log('[RecordingStateContext] Recording started event');
+        const unlistenStarted = await recordingService.onRecordingStarted((payload) => {
+          console.log('[RecordingStateContext] Recording started event', payload);
           setState(prev => ({
             ...prev,
             isRecording: true,
             isPaused: false,
             isActive: true,
             status: RecordingStatus.RECORDING,  // NEW: Set status to RECORDING
+            // Default to true if the event didn't include it (older backend build)
+            isTranscribeLive: payload?.transcribe_live ?? true,
           }));
           startPolling();
         });

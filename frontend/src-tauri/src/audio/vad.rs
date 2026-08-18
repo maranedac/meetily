@@ -236,8 +236,13 @@ impl ContinuousVadProcessor {
                         self.last_logged_state = true;
                     }
                     self.in_speech = true;
-                    // Use 16000 (VAD processing rate) since processed_samples counts 16kHz samples
-                    self.speech_start_sample = self.processed_samples + (timestamp_ms * 16000 / 1000);
+                    // `timestamp_ms` is already an absolute position (same convention as
+                    // SpeechEnd's start_timestamp_ms/end_timestamp_ms below, which are used
+                    // directly with no offset) - NOT relative to processed_samples at the time
+                    // of this transition. Adding processed_samples here double-counted the
+                    // offset, only visible when flush() later force-closes this segment (i.e.
+                    // audio ends mid-speech) - produced a start time far past the actual end.
+                    self.speech_start_sample = (timestamp_ms as f64 * 16000.0 / 1000.0) as usize;
                     self.current_speech.clear();
                 }
                 VadTransition::SpeechEnd { start_timestamp_ms, end_timestamp_ms, samples } => {

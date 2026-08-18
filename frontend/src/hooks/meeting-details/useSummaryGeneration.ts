@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Transcript, Summary } from '@/types';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { CurrentMeeting, useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -50,6 +50,17 @@ async function resolveSummaryLanguage(
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
+/** Formats a duration in milliseconds as a short human string, e.g. "45s", "1m 12s", "2m" */
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(1, Math.round(ms / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
 interface UseSummaryGenerationProps {
   meeting: any;
   transcripts: Transcript[];
@@ -75,6 +86,11 @@ export function useSummaryGeneration({
 }: UseSummaryGenerationProps) {
   const [summaryStatus, setSummaryStatus] = useState<SummaryStatus>('idle');
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [lastGenerationDurationMs, setLastGenerationDurationMs] = useState<number | null>(null);
+
+  // Timestamp (ms) marking when the in-flight generation/regeneration started,
+  // used to compute how long it took once it completes.
+  const generationStartRef = useRef<number | null>(null);
 
   const { startSummaryPolling, stopSummaryPolling } = useSidebar();
 
@@ -88,13 +104,15 @@ export function useSummaryGeneration({
       case 'regenerating':
         return 'Regenerating summary...';
       case 'completed':
-        return 'Summary completed';
+        return lastGenerationDurationMs !== null
+          ? `Summary completed in ${formatDuration(lastGenerationDurationMs)}`
+          : 'Summary completed';
       case 'error':
         return 'Error generating summary';
       default:
         return '';
     }
-  }, []);
+  }, [lastGenerationDurationMs]);
 
   // Unified summary processing logic
   const processSummary = useCallback(async ({
@@ -110,6 +128,7 @@ export function useSummaryGeneration({
   }) => {
     setSummaryStatus(isRegeneration ? 'regenerating' : 'processing');
     setSummaryError(null);
+    generationStartRef.current = Date.now();
 
     try {
       if (!transcriptText.trim()) {
@@ -275,11 +294,17 @@ export function useSummaryGeneration({
           if (pollingResult.data.markdown) {
             console.log('Received markdown format from backend');
             setAiSummary({ markdown: pollingResult.data.markdown } as any);
+
+            const elapsedMs = generationStartRef.current ? Date.now() - generationStartRef.current : null;
+            if (elapsedMs !== null) setLastGenerationDurationMs(elapsedMs);
+
             setSummaryStatus('completed');
 
             // Show success toast
             toast.success('Summary generated successfully!', {
-              description: 'Your meeting summary is ready',
+              description: elapsedMs !== null
+                ? `Completed in ${formatDuration(elapsedMs)}`
+                : 'Your meeting summary is ready',
               duration: 4000,
             });
 
@@ -349,11 +374,17 @@ export function useSummaryGeneration({
           }
 
           setAiSummary(formattedSummary);
+
+          const elapsedMs = generationStartRef.current ? Date.now() - generationStartRef.current : null;
+          if (elapsedMs !== null) setLastGenerationDurationMs(elapsedMs);
+
           setSummaryStatus('completed');
 
           // Show success toast
           toast.success('Summary generated successfully!', {
-            description: 'Your meeting summary is ready',
+            description: elapsedMs !== null
+              ? `Completed in ${formatDuration(elapsedMs)}`
+              : 'Your meeting summary is ready',
             duration: 4000,
           });
 

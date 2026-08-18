@@ -63,12 +63,34 @@ function cleanStopWords(text: string): string {
     return cleanedText.replace(/\s+/g, ' ').trim();
 }
 
+// Small badge showing who a segment came from ("mic" = you, "system" = everyone
+// else). When offline diarization has identified individual speakers within
+// "system" (speaker_label, e.g. "Speaker 2"), show that instead of the generic
+// "Others" bucket - still purple, no per-person color for now.
+function SpeakerBadge({ speaker, speakerLabel }: { speaker?: 'mic' | 'system'; speakerLabel?: string }) {
+    if (!speaker) return null;
+
+    const isYou = speaker === 'mic';
+    const label = isYou ? 'You' : (speakerLabel || 'Others');
+    return (
+        <span
+            className={`inline-block text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-semibold mr-2 align-middle ${
+                isYou ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+            }`}
+        >
+            {label}
+        </span>
+    );
+}
+
 // Memoized transcript segment component
 const TranscriptSegment = memo(function TranscriptSegment({
     id,
     timestamp,
     text,
     confidence,
+    speaker,
+    speakerLabel,
     isStreaming,
     showConfidence,
 }: {
@@ -76,6 +98,8 @@ const TranscriptSegment = memo(function TranscriptSegment({
     timestamp: number;
     text: string;
     confidence?: number;
+    speaker?: 'mic' | 'system';
+    speakerLabel?: string;
     isStreaming: boolean;
     showConfidence: boolean;
 }) {
@@ -99,10 +123,16 @@ const TranscriptSegment = memo(function TranscriptSegment({
                 <div className="flex-1">
                     {isStreaming ? (
                         <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
-                            <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                            <p className="text-base text-gray-800 leading-relaxed">
+                                <SpeakerBadge speaker={speaker} speakerLabel={speakerLabel} />
+                                {displayText}
+                            </p>
                         </div>
                     ) : (
-                        <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                        <p className="text-base text-gray-800 leading-relaxed">
+                            <SpeakerBadge speaker={speaker} speakerLabel={speakerLabel} />
+                            {displayText}
+                        </p>
                     )}
                 </div>
             </div>
@@ -294,6 +324,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         timestamp={segment.timestamp}
                                         text={getDisplayText(segment)}
                                         confidence={segment.confidence}
+                                        speaker={segment.speaker}
+                                        speakerLabel={segment.speaker_label}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
                                     />
@@ -350,6 +382,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         timestamp={segment.timestamp}
                                         text={getDisplayText(segment)}
                                         confidence={segment.confidence}
+                                        speaker={segment.speaker}
+                                        speakerLabel={segment.speaker_label}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
                                     />

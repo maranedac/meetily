@@ -4,6 +4,7 @@
 
 use super::engine::TranscriptionEngine;
 use super::provider::TranscriptionError;
+use crate::audio::recording_state::DeviceType;
 use crate::audio::AudioChunk;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,15 @@ pub struct TranscriptUpdate {
     pub audio_start_time: f64, // Seconds from recording start (e.g., 125.3)
     pub audio_end_time: f64,   // Seconds from recording start (e.g., 128.6)
     pub duration: f64,          // Segment duration in seconds (e.g., 3.3)
+}
+
+/// Maps a capture device to the "speaker" label persisted with each transcript
+/// segment: "mic" is always the user, "system" is everyone else (loopback audio).
+fn device_type_to_source(device_type: &DeviceType) -> &'static str {
+    match device_type {
+        DeviceType::Microphone => "mic",
+        DeviceType::System => "system",
+    }
 }
 
 // NOTE: get_transcript_history and get_recording_meeting_name functions
@@ -142,6 +152,7 @@ pub fn start_transcription_task<R: Runtime>(
 
                             let chunk_timestamp = chunk.timestamp;
                             let chunk_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
+                            let chunk_source = device_type_to_source(&chunk.device_type);
 
                             // Transcribe with provider-agnostic approach
                             match transcribe_chunk_with_provider(
@@ -208,7 +219,7 @@ pub fn start_transcription_task<R: Runtime>(
                                         let update = TranscriptUpdate {
                                             text: transcript,
                                             timestamp: format_current_timestamp(), // Wall-clock for reference
-                                            source: "Audio".to_string(),
+                                            source: chunk_source.to_string(),
                                             sequence_id,
                                             chunk_start_time: chunk_timestamp, // Legacy compatibility
                                             is_partial,

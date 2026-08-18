@@ -23,6 +23,17 @@ pub struct RecordingPreferences {
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
+    /// When true (default), audio is transcribed live during recording (VAD + Whisper/Parakeet
+    /// run alongside capture). When false, recording only captures audio (mixed + per-source
+    /// mic/system tracks) and the user transcribes it later on demand from meeting-details —
+    /// avoids competing with capture for CPU and avoids the live worker falling behind on long
+    /// recordings with a slow model.
+    #[serde(default = "default_transcribe_live")]
+    pub transcribe_live: bool,
+}
+
+fn default_transcribe_live() -> bool {
+    true
 }
 
 impl Default for RecordingPreferences {
@@ -35,6 +46,7 @@ impl Default for RecordingPreferences {
             preferred_system_device: None,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
+            transcribe_live: true,
         }
     }
 }
@@ -128,9 +140,9 @@ pub async fn load_recording_preferences<R: Runtime>(
         RecordingPreferences::default()
     };
 
-    info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}",
+    info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}, transcribe_live={}",
           prefs.save_folder, prefs.auto_save, prefs.file_format,
-          prefs.preferred_mic_device, prefs.preferred_system_device);
+          prefs.preferred_mic_device, prefs.preferred_system_device, prefs.transcribe_live);
     Ok(prefs)
 }
 

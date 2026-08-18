@@ -8,6 +8,12 @@ import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import Analytics from '@/lib/analytics';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 
@@ -15,7 +21,10 @@ interface RecordingControlsProps {
   isRecording: boolean;
   barHeights: string[];
   onRecordingStop: (callApi?: boolean) => void;
-  onRecordingStart: () => void;
+  // transcribeLive: true = transcribe live (VAD/Whisper alongside capture), false =
+  // "record only" (transcribe later on demand from meeting-details) - chosen in the
+  // record button's dropdown below.
+  onRecordingStart: (transcribeLive: boolean) => void;
   onTranscriptReceived: (summary: SummaryResponse) => void;
   onTranscriptionError?: (message: string) => void;
   onStopInitiated?: () => void; // Called immediately when stop button is clicked
@@ -83,9 +92,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     checkTauri();
   }, []);
 
-  const handleStartRecording = useCallback(async () => {
+  const handleStartRecording = useCallback(async (transcribeLive: boolean) => {
     if (isStarting || isValidatingModel) return;
-    console.log('Starting recording...');
+    console.log('Starting recording... transcribeLive:', transcribeLive);
     console.log('Selected devices:', selectedDevices);
     console.log('Meeting name:', meetingName);
     console.log('Current isRecording state:', isRecording);
@@ -96,11 +105,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     try {
       // Call the validation callback which will:
-      // 1. Check if model is ready
+      // 1. Check if model is ready (skipped entirely in "record only" mode)
       // 2. Show appropriate toast/modal
       // 3. Call backend if valid
       // 4. Update UI state
-      await onRecordingStart();
+      await onRecordingStart(transcribeLive);
     } catch (error) {
       console.error('Failed to start recording:', error);
       console.error('Error details:', {
@@ -353,7 +362,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               {showPlayback ? (
                 <>
                   <button
-                    onClick={handleStartRecording}
+                    onClick={() => handleStartRecording(true)}
                     className="w-10 h-10 flex items-center justify-center bg-red-500 rounded-full text-white hover:bg-red-600 transition-colors"
                   >
                     <Mic size={16} />
@@ -388,14 +397,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               ) : (
                 <>
                   {!isRecording ? (
-                    // Start recording button
-                    <Tooltip>
-                      <TooltipTrigger asChild>
+                    // Start recording - choose transcribe-live vs record-only before starting
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
                         <button
-                          onClick={() => {
-                            Analytics.trackButtonClick('start_recording', 'recording_controls');
-                            handleStartRecording();
-                          }}
+                          title="Start recording"
                           disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
                           className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing || isValidatingModel ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
                             } rounded-full text-white transition-colors relative`}
@@ -406,11 +412,32 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                             <Mic size={20} />
                           )}
                         </button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Start recording</p>
-                      </TooltipContent>
-                    </Tooltip>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            Analytics.trackButtonClick('start_recording_live', 'recording_controls');
+                            handleStartRecording(true);
+                          }}
+                        >
+                          <div className="flex flex-col py-0.5">
+                            <span className="font-medium">Record &amp; transcribe</span>
+                            <span className="text-xs text-muted-foreground">Live transcript while you record</span>
+                          </div>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => {
+                            Analytics.trackButtonClick('start_recording_only', 'recording_controls');
+                            handleStartRecording(false);
+                          }}
+                        >
+                          <div className="flex flex-col py-0.5">
+                            <span className="font-medium">Record only</span>
+                            <span className="text-xs text-muted-foreground">Transcribe later, uses less CPU now</span>
+                          </div>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   ) : (
                     // Recording controls (pause/resume + stop)
                     <>

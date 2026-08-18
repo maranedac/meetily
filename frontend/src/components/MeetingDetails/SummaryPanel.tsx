@@ -60,6 +60,7 @@ interface SummaryPanelProps {
   onTemplateSelect: (templateId: string, templateName: string) => void;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
+  onTemplatesChanged?: () => void;
 }
 
 export function SummaryPanel({
@@ -95,7 +96,8 @@ export function SummaryPanel({
   selectedTemplate,
   onTemplateSelect,
   isModelConfigLoading = false,
-  onOpenModelSettings
+  onOpenModelSettings,
+  onTemplatesChanged
 }: SummaryPanelProps) {
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
@@ -284,6 +286,7 @@ export function SummaryPanel({
                 hasSummary={!!aiSummary}
                 isModelConfigLoading={isModelConfigLoading}
                 onOpenModelSettings={onOpenModelSettings}
+                onTemplatesChanged={onTemplatesChanged}
                 languageSlot={languageSlot}
               />
             </div>
@@ -325,6 +328,7 @@ export function SummaryPanel({
               hasTranscripts={transcripts.length > 0}
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={onOpenModelSettings}
+              onTemplatesChanged={onTemplatesChanged}
             />
           </div>
           {/* Loading spinner */}
@@ -354,6 +358,7 @@ export function SummaryPanel({
               hasSummary={false}
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={onOpenModelSettings}
+              onTemplatesChanged={onTemplatesChanged}
               languageSlot={transcripts.length > 0 ? languageSlot : undefined}
             />
           </div>

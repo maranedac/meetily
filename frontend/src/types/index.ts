@@ -16,12 +16,19 @@ export interface Transcript {
   audio_start_time?: number; // Seconds from recording start (e.g., 125.3)
   audio_end_time?: number;   // Seconds from recording start (e.g., 128.6)
   duration?: number;          // Segment duration in seconds (e.g., 3.3)
+  // Which audio source this segment came from: "mic" (you) or "system" (others).
+  // Undefined for legacy transcripts saved before this was tracked.
+  speaker?: 'mic' | 'system';
+  // Individual speaker identity within "system", e.g. "Speaker 1" - set only when
+  // offline diarization has run for this meeting (see TranscriptButtonGroup's
+  // "Transcribe" action). Undefined otherwise, including for "mic" segments.
+  speaker_label?: string;
 }
 
 export interface TranscriptUpdate {
   text: string;
   timestamp: string; // Wall-clock time for reference
-  source: string;
+  source: 'mic' | 'system'; // Which audio source this segment came from
   sequence_id: number;
   chunk_start_time: number; // Legacy field
   is_partial: boolean;
@@ -92,6 +99,9 @@ export interface MeetingMetadata {
   created_at: string;
   updated_at: string;
   folder_path?: string;
+  // "completed" (has a transcript) | "pending" (audio-only, "record only" mode,
+  // not yet transcribed - see TranscriptButtonGroup's "Transcribe" button)
+  transcription_status?: string;
 }
 
 export interface PaginatedTranscriptsResponse {
@@ -107,4 +117,9 @@ export interface TranscriptSegmentData {
   endTime?: number; // audio_end_time in seconds
   text: string;
   confidence?: number;
+  // Which audio source this segment came from: "mic" (you) or "system" (others)
+  speaker?: 'mic' | 'system';
+  // Individual speaker identity within "system" (e.g. "Speaker 1"), set only when
+  // offline diarization has run for this meeting.
+  speaker_label?: string;
 }

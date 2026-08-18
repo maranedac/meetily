@@ -28,6 +28,7 @@ interface TranscriptPanelProps {
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
+  transcriptionStatus?: string;
 }
 
 export function TranscriptPanel({
@@ -48,6 +49,7 @@ export function TranscriptPanel({
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
+  transcriptionStatus,
 }: TranscriptPanelProps) {
   // Convert transcripts to segments if pagination is not used but we want virtualization
   const convertedSegments = useMemo(() => {
@@ -61,6 +63,8 @@ export function TranscriptPanel({
       endTime: t.audio_end_time,
       text: t.text,
       confidence: t.confidence,
+      speaker: t.speaker,
+      speaker_label: t.speaker_label,
     }));
   }, [transcripts, usePagination, segments]);
 
@@ -75,8 +79,16 @@ export function TranscriptPanel({
           meetingId={meetingId}
           meetingFolderPath={meetingFolderPath}
           onRefetchTranscripts={onRefetchTranscripts}
+          transcriptionStatus={transcriptionStatus}
         />
       </div>
+
+      {/* Audio-only meeting, not yet transcribed ("record only" mode) */}
+      {transcriptionStatus === 'pending' && convertedSegments.length === 0 && (
+        <div className="mx-4 mt-3 p-3 rounded-md bg-blue-50 border border-blue-200 text-sm text-blue-800">
+          This meeting was recorded audio-only. Press <strong>Transcribe</strong> above to generate the transcript.
+        </div>
+      )}
 
       {/* Transcript content - use virtualized view for better performance */}
       <div className="flex-1 overflow-hidden pb-4">

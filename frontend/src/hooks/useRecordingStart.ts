@@ -10,7 +10,7 @@ import { showRecordingNotification } from '@/lib/recordingNotification';
 import { toast } from 'sonner';
 
 interface UseRecordingStartReturn {
-  handleRecordingStart: () => Promise<void>;
+  handleRecordingStart: (transcribeLive: boolean) => Promise<void>;
   isAutoStarting: boolean;
 }
 
@@ -79,37 +79,63 @@ export function useRecordingStart(
     }
   }, []);
 
-  // Handle manual recording start (from button click)
-  const handleRecordingStart = useCallback(async () => {
+  // Persist the transcribe-live choice made on the record button so it becomes the
+  // new default (read server-side by start_recording_with_devices_and_meeting) -
+  // reuses the exact same preference the Settings toggle writes, just without a
+  // trip through the Settings page. Best-effort: a failure here shouldn't block
+  // starting the recording, it just means the choice won't stick as the default.
+  const persistTranscribeLivePreference = useCallback(async (transcribeLive: boolean) => {
     try {
-      console.log('handleRecordingStart called - checking Parakeet model status');
+      const current = await invoke<Record<string, unknown>>('get_recording_preferences');
+      await invoke('set_recording_preferences', {
+        preferences: { ...current, transcribe_live: transcribeLive },
+      });
+    } catch (error) {
+      console.warn('Failed to persist transcribe_live preference:', error);
+    }
+  }, []);
 
-      // Check if Parakeet transcription model is ready before starting
-      const parakeetReady = await checkParakeetReady();
-      if (!parakeetReady) {
-        const isDownloading = await checkIfModelDownloading();
-        if (isDownloading) {
-          toast.info('Model download in progress', {
-            description: 'Please wait for the transcription model to finish downloading before recording.',
-            duration: 5000,
-          });
-          Analytics.trackButtonClick('start_recording_blocked_downloading', 'home_page');
-        } else {
-          toast.error('Transcription model not ready', {
-            description: 'Please download a transcription model before recording.',
-            duration: 5000,
-          });
-          showModal?.('modelSelector', 'Transcription model setup required');
-          Analytics.trackButtonClick('start_recording_blocked_missing', 'home_page');
+  // Handle manual recording start (from button click)
+  // `transcribeLive` is the mode chosen in the record button's dropdown: true =
+  // transcribe live (VAD/Whisper alongside capture), false = "record only" (audio
+  // saved, transcribe later on demand from meeting-details).
+  const handleRecordingStart = useCallback(async (transcribeLive: boolean) => {
+    try {
+      console.log(`handleRecordingStart called (transcribeLive=${transcribeLive}) - checking model status`);
+
+      // The transcription model readiness check only matters when we're actually
+      // going to transcribe - "record only" mode never loads a model during capture.
+      if (transcribeLive) {
+        const parakeetReady = await checkParakeetReady();
+        if (!parakeetReady) {
+          const isDownloading = await checkIfModelDownloading();
+          if (isDownloading) {
+            toast.info('Model download in progress', {
+              description: 'Please wait for the transcription model to finish downloading before recording.',
+              duration: 5000,
+            });
+            Analytics.trackButtonClick('start_recording_blocked_downloading', 'home_page');
+          } else {
+            toast.error('Transcription model not ready', {
+              description: 'Please download a transcription model before recording.',
+              duration: 5000,
+            });
+            showModal?.('modelSelector', 'Transcription model setup required');
+            Analytics.trackButtonClick('start_recording_blocked_missing', 'home_page');
+          }
+          setStatus(RecordingStatus.IDLE);
+          return;
         }
-        setStatus(RecordingStatus.IDLE);
-        return;
       }
 
-      console.log('Parakeet ready - setting up meeting title and state');
+      console.log('Model check passed - setting up meeting title and state');
 
       const randomTitle = generateMeetingTitle();
       setMeetingTitle(randomTitle);
+
+      // Persist the chosen mode as the new default before starting, so the backend
+      // (which reads this preference server-side) picks it up immediately.
+      await persistTranscribeLivePreference(transcribeLive);
 
       // Set STARTING status before initiating backend recording
       setStatus(RecordingStatus.STARTING, 'Initializing recording...');
@@ -141,96 +167,12 @@ export function useRecordingStart(
       // Re-throw so RecordingControls can handle device-specific errors
       throw error;
     }
-  }, [generateMeetingTitle, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, checkParakeetReady, checkIfModelDownloading, selectedDevices, showModal, setStatus]);
+  }, [generateMeetingTitle, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, checkParakeetReady, checkIfModelDownloading, selectedDevices, showModal, setStatus, persistTranscribeLivePreference]);
 
-  // Check for autoStartRecording flag and start recording automatically
-  useEffect(() => {
-    const checkAutoStartRecording = async () => {
-      if (typeof window !== 'undefined') {
-        const shouldAutoStart = sessionStorage.getItem('autoStartRecording');
-        if (shouldAutoStart === 'true' && !isRecording && !isAutoStarting) {
-          console.log('Auto-starting recording from navigation...');
-          setIsAutoStarting(true);
-          sessionStorage.removeItem('autoStartRecording'); // Clear the flag
-
-          // Check if Parakeet transcription model is ready before starting
-          const parakeetReady = await checkParakeetReady();
-          if (!parakeetReady) {
-            const isDownloading = await checkIfModelDownloading();
-            if (isDownloading) {
-              toast.info('Model download in progress', {
-                description: 'Please wait for the transcription model to finish downloading before recording.',
-                duration: 5000,
-              });
-              Analytics.trackButtonClick('start_recording_blocked_downloading', 'sidebar_auto');
-            } else {
-              toast.error('Transcription model not ready', {
-                description: 'Please download a transcription model before recording.',
-                duration: 5000,
-              });
-              showModal?.('modelSelector', 'Transcription model setup required');
-              Analytics.trackButtonClick('start_recording_blocked_missing', 'sidebar_auto');
-            }
-            setStatus(RecordingStatus.IDLE);
-            setIsAutoStarting(false);
-            return;
-          }
-
-          // Start the actual backend recording
-          try {
-            // Generate meeting title
-            const generatedMeetingTitle = generateMeetingTitle();
-
-            // Set STARTING status before initiating backend recording
-            setStatus(RecordingStatus.STARTING, 'Initializing recording...');
-
-            console.log('Auto-starting backend recording with meeting:', generatedMeetingTitle);
-            const result = await recordingService.startRecordingWithDevices(
-              selectedDevices?.micDevice || null,
-              selectedDevices?.systemDevice || null,
-              generatedMeetingTitle
-            );
-            console.log('Auto-start backend recording result:', result);
-
-            // Update UI state after successful backend start
-            // Note: RECORDING status will be set by RecordingStateContext event listener
-            setMeetingTitle(generatedMeetingTitle);
-            setIsRecording(true);
-            clearTranscripts();
-            setIsMeetingActive(true);
-            Analytics.trackButtonClick('start_recording', 'sidebar_auto');
-
-            // Show recording notification if enabled
-            await showRecordingNotification();
-          } catch (error) {
-            console.error('Failed to auto-start recording:', error);
-            setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to auto-start recording');
-            alert('Failed to start recording. Check console for details.');
-            Analytics.trackButtonClick('start_recording_error', 'sidebar_auto');
-          } finally {
-            setIsAutoStarting(false);
-          }
-        }
-      }
-    };
-
-    checkAutoStartRecording();
-  }, [
-    isRecording,
-    isAutoStarting,
-    selectedDevices,
-    generateMeetingTitle,
-    setMeetingTitle,
-    setIsRecording,
-    clearTranscripts,
-    setIsMeetingActive,
-    checkParakeetReady,
-    checkIfModelDownloading,
-    showModal,
-    setStatus,
-  ]);
-
-  // Listen for direct recording trigger from sidebar when already on home page
+  // Listen for direct recording trigger from the system tray ("Start Recording" menu
+  // item -> layout.tsx's request-recording-toggle handler forwards here). Unlike the
+  // left sidebar button (see SidebarProvider.tsx), the tray can't show a mode-choice
+  // dropdown, so it starts immediately using the current default preference.
   useEffect(() => {
     const handleDirectStart = async () => {
       if (isRecording || isAutoStarting) {
@@ -238,7 +180,7 @@ export function useRecordingStart(
         return;
       }
 
-      console.log('Direct start from sidebar - checking Parakeet model status');
+      console.log('Direct start from tray - checking Parakeet model status');
       setIsAutoStarting(true);
 
       // Check if Parakeet transcription model is ready before starting

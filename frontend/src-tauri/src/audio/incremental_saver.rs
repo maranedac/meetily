@@ -23,21 +23,31 @@ pub struct IncrementalAudioSaver {
     checkpoints_dir: PathBuf,
     meeting_folder: PathBuf,
     sample_rate: u32,
+    // Base name for checkpoint files and the final merged output, e.g. "audio" (the mixed
+    // track, saved today as before) or "mic"/"system" (raw per-source tracks used only in
+    // "record only" mode, see recording_saver.rs) -> "{base_name}.mp4".
+    base_name: String,
 }
 
 impl IncrementalAudioSaver {
     /// Create a new incremental saver
     ///
     /// # Arguments
-    /// * `meeting_folder` - Path to the meeting folder (contains .checkpoints/)
+    /// * `meeting_folder` - Path to the meeting folder
     /// * `sample_rate` - Sample rate of audio (typically 48000)
-    pub fn new(meeting_folder: PathBuf, sample_rate: u32) -> Result<Self> {
-        let checkpoints_dir = meeting_folder.join(".checkpoints");
+    /// * `base_name` - Base name for checkpoints/final file, e.g. "audio", "mic", "system".
+    ///   "audio" keeps today's exact `.checkpoints/` dir name (relied on by the crash-recovery
+    ///   commands below); any other name gets its own `.checkpoints_{base_name}/` dir.
+    pub fn new(meeting_folder: PathBuf, sample_rate: u32, base_name: &str) -> Result<Self> {
+        let checkpoints_dir_name = if base_name == "audio" {
+            ".checkpoints".to_string()
+        } else {
+            format!(".checkpoints_{}", base_name)
+        };
+        let checkpoints_dir = meeting_folder.join(checkpoints_dir_name);
 
-        // Verify checkpoints directory exists
-        if !checkpoints_dir.exists() {
-            return Err(anyhow!("Checkpoints directory does not exist: {}", checkpoints_dir.display()));
-        }
+        // Create the checkpoints directory if it doesn't already exist (idempotent)
+        std::fs::create_dir_all(&checkpoints_dir)?;
 
         Ok(Self {
             checkpoint_buffer: Vec::new(),
@@ -46,6 +56,7 @@ impl IncrementalAudioSaver {
             checkpoints_dir,
             meeting_folder,
             sample_rate,
+            base_name: base_name.to_string(),
         })
     }
 
@@ -90,7 +101,7 @@ impl IncrementalAudioSaver {
 
         // Generate checkpoint filename
         let checkpoint_path = self.checkpoints_dir
-            .join(format!("audio_chunk_{:03}.mp4", self.checkpoint_count));
+            .join(format!("{}_chunk_{:03}.mp4", self.base_name, self.checkpoint_count));
 
         // Encode and save checkpoint
         encode_single_audio(
@@ -129,7 +140,7 @@ impl IncrementalAudioSaver {
         }
 
         // Merge all checkpoints using FFmpeg concat
-        let final_audio_path = self.meeting_folder.join("audio.mp4");
+        let final_audio_path = self.meeting_folder.join(format!("{}.mp4", self.base_name));
         self.merge_checkpoints(&final_audio_path).await?;
 
         // Clean up checkpoints directory
@@ -155,7 +166,7 @@ impl IncrementalAudioSaver {
 
         for i in 0..self.checkpoint_count {
             let checkpoint_path = self.checkpoints_dir
-                .join(format!("audio_chunk_{:03}.mp4", i));
+                .join(format!("{}_chunk_{:03}.mp4", self.base_name, i));
 
             // Verify checkpoint exists
             if !checkpoint_path.exists() {
@@ -429,7 +440,8 @@ mod tests {
 
         let mut saver = IncrementalAudioSaver::new(
             meeting_folder.clone(),
-            48000
+            48000,
+            "audio"
         ).unwrap();
 
         // Add 60 seconds worth of audio (should create 2 checkpoints)
@@ -464,7 +476,8 @@ mod tests {
 
         let mut saver = IncrementalAudioSaver::new(
             meeting_folder.clone(),
-            48000
+            48000,
+            "audio"
         ).unwrap();
 
         // Try to finalize without adding any chunks

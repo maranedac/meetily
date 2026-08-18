@@ -3,10 +3,10 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw } from 'lucide-react';
+import { Copy, FolderOpen, RefreshCw, Mic, Users } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
-import { useConfig } from '@/contexts/ConfigContext';
+import { DiarizeDialog } from './DiarizeDialog';
 
 
 interface TranscriptButtonGroupProps {
@@ -16,6 +16,9 @@ interface TranscriptButtonGroupProps {
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
+  // 'pending' = meeting was recorded audio-only ("record only" mode) and has no
+  // transcript yet - offers the "Transcribe" action below regardless of the beta flag.
+  transcriptionStatus?: string;
 }
 
 
@@ -26,9 +29,12 @@ export function TranscriptButtonGroup({
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
+  transcriptionStatus,
 }: TranscriptButtonGroupProps) {
-  const { betaFeatures } = useConfig();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
+  const [showTranscribeDialog, setShowTranscribeDialog] = useState(false);
+  const [showDiarizeDialog, setShowDiarizeDialog] = useState(false);
+  const isPendingTranscription = transcriptionStatus === 'pending';
 
   const handleRetranscribeComplete = useCallback(async () => {
     // Refetch transcripts to show the updated data
@@ -68,7 +74,23 @@ export function TranscriptButtonGroup({
           <span className="hidden lg:inline">Recording</span>
         </Button>
 
-        {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
+        {isPendingTranscription && meetingId && meetingFolderPath && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 xl:px-4"
+            onClick={() => {
+              Analytics.trackButtonClick('transcribe_recording', 'meeting_details');
+              setShowTranscribeDialog(true);
+            }}
+            title="Transcribe this audio-only recording"
+          >
+            <Mic className="xl:mr-2" size={18} />
+            <span className="hidden lg:inline">Transcribe</span>
+          </Button>
+        )}
+
+        {!isPendingTranscription && meetingId && meetingFolderPath && (
           <Button
             size="sm"
             variant="outline"
@@ -77,18 +99,55 @@ export function TranscriptButtonGroup({
               Analytics.trackButtonClick('enhance_transcript', 'meeting_details');
               setShowRetranscribeDialog(true);
             }}
-            title="Retranscribe to enhance your recorded audio"
+            title="Re-transcribe with a different model or language"
           >
             <RefreshCw className="xl:mr-2" size={18} />
             <span className="hidden lg:inline">Enhance</span>
           </Button>
         )}
+
+        {!isPendingTranscription && meetingId && meetingFolderPath && transcriptCount > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 xl:px-4"
+            onClick={() => {
+              Analytics.trackButtonClick('identify_speakers', 'meeting_details');
+              setShowDiarizeDialog(true);
+            }}
+            title="Identify individual speakers in the system audio"
+          >
+            <Users className="xl:mr-2" size={18} />
+            <span className="hidden lg:inline">Speakers</span>
+          </Button>
+        )}
       </ButtonGroup>
 
-      {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
+      {isPendingTranscription && meetingId && meetingFolderPath && (
+        <RetranscribeDialog
+          open={showTranscribeDialog}
+          onOpenChange={setShowTranscribeDialog}
+          meetingId={meetingId}
+          meetingFolderPath={meetingFolderPath}
+          onComplete={handleRetranscribeComplete}
+          mode="transcribe"
+        />
+      )}
+
+      {!isPendingTranscription && meetingId && meetingFolderPath && (
         <RetranscribeDialog
           open={showRetranscribeDialog}
           onOpenChange={setShowRetranscribeDialog}
+          meetingId={meetingId}
+          meetingFolderPath={meetingFolderPath}
+          onComplete={handleRetranscribeComplete}
+        />
+      )}
+
+      {!isPendingTranscription && meetingId && meetingFolderPath && transcriptCount > 0 && (
+        <DiarizeDialog
+          open={showDiarizeDialog}
+          onOpenChange={setShowDiarizeDialog}
           meetingId={meetingId}
           meetingFolderPath={meetingFolderPath}
           onComplete={handleRetranscribeComplete}

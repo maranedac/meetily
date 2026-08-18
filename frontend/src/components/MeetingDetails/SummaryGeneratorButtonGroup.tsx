@@ -14,15 +14,17 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Sparkles, Settings, Loader2, FileText, Check, Square } from 'lucide-react';
+import { Sparkles, Settings, Loader2, FileText, Check, Square, Settings2 } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useState, useEffect, useRef, ReactNode } from 'react';
 import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
+import { TemplateManager } from '@/components/TemplateManager/TemplateManager';
 
 interface SummaryGeneratorButtonGroupProps {
   languageSlot?: ReactNode;
@@ -40,6 +42,7 @@ interface SummaryGeneratorButtonGroupProps {
   hasSummary?: boolean;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
+  onTemplatesChanged?: () => void;
 }
 
 export function SummaryGeneratorButtonGroup({
@@ -57,10 +60,12 @@ export function SummaryGeneratorButtonGroup({
   hasSummary = false,
   isModelConfigLoading = false,
   onOpenModelSettings,
+  onTemplatesChanged,
   languageSlot
 }: SummaryGeneratorButtonGroupProps) {
   const [isCheckingModels, setIsCheckingModels] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
 
   // Expose the function to open the modal via callback registration
   useEffect(() => {
@@ -352,9 +357,29 @@ export function SummaryGeneratorButtonGroup({
               </DropdownMenuItem>
             ))}
 
+            <DropdownMenuSeparator />
+
+            <DropdownMenuItem
+              onClick={() => {
+                Analytics.trackButtonClick('manage_templates', 'meeting_details');
+                setTemplateManagerOpen(true);
+              }}
+              className="flex items-center gap-2 text-blue-600"
+            >
+              <Settings2 className="h-4 w-4" />
+              <span>Manage templates...</span>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       )}
+
+      {/* Template manager: view, create, edit and delete summary templates */}
+      <Dialog open={templateManagerOpen} onOpenChange={setTemplateManagerOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogTitle>Manage Templates</DialogTitle>
+          <TemplateManager onTemplatesChanged={onTemplatesChanged} />
+        </DialogContent>
+      </Dialog>
     </ButtonGroup>
   );
 }

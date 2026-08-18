@@ -112,17 +112,17 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Create new recording manager
     let mut manager = RecordingManager::new();
 
-    // Load recording preferences to get auto_save AND device preferences
-    let (auto_save, preferred_mic_name, preferred_system_name) =
+    // Load recording preferences to get auto_save, transcribe_live AND device preferences
+    let (auto_save, transcribe_live, preferred_mic_name, preferred_system_name) =
         match super::recording_preferences::load_recording_preferences(&app).await {
             Ok(prefs) => {
-                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}",
-                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device);
-                (prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device)
+                info!("📋 Loaded recording preferences: auto_save={}, transcribe_live={}, preferred_mic={:?}, preferred_system={:?}",
+                      prefs.auto_save, prefs.transcribe_live, prefs.preferred_mic_device, prefs.preferred_system_device);
+                (prefs.auto_save, prefs.transcribe_live, prefs.preferred_mic_device, prefs.preferred_system_device)
             }
             Err(e) => {
                 warn!("Failed to load recording preferences, using defaults: {}", e);
-                (true, None, None)
+                (true, true, None, None)
             }
         };
 
@@ -234,7 +234,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
     let transcription_receiver = manager
-        .start_recording(microphone_device, system_device, auto_save)
+        .start_recording(microphone_device, system_device, auto_save, transcribe_live)
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
@@ -250,11 +250,15 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     drop(engine_lifecycle_guard);
     reset_speech_detected_flag(); // Reset for new recording session
 
-    // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
-    {
+    // "Record only" mode: skip the transcription task entirely - the pipeline already
+    // isn't sending it any chunks (see AudioPipeline::run), so there's nothing to
+    // process. This is where the CPU savings the user asked for come from.
+    if transcribe_live {
+        let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
         let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
         *global_task = Some(task_handle);
+    } else {
+        info!("🔇 Live transcription disabled - not starting transcription task");
     }
 
     // CRITICAL: Listen for transcript-update events and save to recording manager
@@ -275,6 +279,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                     display_time: update.timestamp.clone(), // Use wall-clock timestamp for display
                     confidence: update.confidence,
                     sequence_id: update.sequence_id,
+                    // Speaker attribution: "mic" (you) vs "system" (others) - carried over
+                    // from the live event so it survives page-reload history sync too.
+                    speaker: Some(update.source.clone()),
                 };
 
                 // Save to recording manager
@@ -294,7 +301,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     app.emit("recording-started", serde_json::json!({
         "message": "Recording started successfully with parallel processing",
         "devices": ["Default Microphone", "Default System Audio"],
-        "workers": 3
+        "workers": 3,
+        "transcribe_live": transcribe_live
     })).map_err(|e| e.to_string())?;
 
     // Update tray menu to reflect recording state
@@ -375,15 +383,15 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Create new recording manager
     let mut manager = RecordingManager::new();
 
-    // Load recording preferences to check auto_save setting
-    let auto_save = match super::recording_preferences::load_recording_preferences(&app).await {
+    // Load recording preferences to check auto_save AND transcribe_live settings
+    let (auto_save, transcribe_live) = match super::recording_preferences::load_recording_preferences(&app).await {
         Ok(prefs) => {
-            info!("📋 Loaded recording preferences: auto_save={}", prefs.auto_save);
-            prefs.auto_save
+            info!("📋 Loaded recording preferences: auto_save={}, transcribe_live={}", prefs.auto_save, prefs.transcribe_live);
+            (prefs.auto_save, prefs.transcribe_live)
         }
         Err(e) => {
-            warn!("Failed to load recording preferences, defaulting to auto_save=true: {}", e);
-            true // Default to saving if preferences can't be loaded
+            warn!("Failed to load recording preferences, defaulting to auto_save=true, transcribe_live=true: {}", e);
+            (true, true) // Default to saving + live transcription if preferences can't be loaded
         }
     };
 
@@ -405,7 +413,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Start recording with specified devices and auto_save setting
     let transcription_receiver = manager
-        .start_recording(mic_device, system_device, auto_save)
+        .start_recording(mic_device, system_device, auto_save, transcribe_live)
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
@@ -421,11 +429,15 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     drop(engine_lifecycle_guard);
     reset_speech_detected_flag(); // Reset for new recording session
 
-    // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
-    {
+    // "Record only" mode: skip the transcription task entirely - the pipeline already
+    // isn't sending it any chunks (see AudioPipeline::run), so there's nothing to
+    // process. This is where the CPU savings the user asked for come from.
+    if transcribe_live {
+        let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
         let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
         *global_task = Some(task_handle);
+    } else {
+        info!("🔇 Live transcription disabled - not starting transcription task");
     }
 
     // CRITICAL: Listen for transcript-update events and save to recording manager
@@ -446,6 +458,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
                     display_time: update.timestamp.clone(), // Use wall-clock timestamp for display
                     confidence: update.confidence,
                     sequence_id: update.sequence_id,
+                    // Speaker attribution: "mic" (you) vs "system" (others) - carried over
+                    // from the live event so it survives page-reload history sync too.
+                    speaker: Some(update.source.clone()),
                 };
 
                 // Save to recording manager
@@ -468,7 +483,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
             mic_device_name.unwrap_or_else(|| "Default Microphone".to_string()),
             system_device_name.unwrap_or_else(|| "Default System Audio".to_string())
         ],
-        "workers": 3
+        "workers": 3,
+        "transcribe_live": transcribe_live
     })).map_err(|e| e.to_string())?;
 
     // Update tray menu to reflect recording state
@@ -586,21 +602,18 @@ pub async fn stop_recording<R: Runtime>(
             }
         });
 
-        // Wait up to 10 minutes for transcription completion to prevent indefinite hangs
-        match tokio::time::timeout(
-            tokio::time::Duration::from_secs(600), // 10 minutes max
-            task_handle
-        ).await {
-            Ok(Ok(())) => {
+        // No timeout here by design: a hard cap previously silently dropped the tail of
+        // long recordings whenever the (serial) transcription worker fell behind real time
+        // (e.g. a slow model on CPU). The worker itself guarantees termination once the
+        // input channel closes and its backlog is drained (see verification loop in
+        // transcription/worker.rs), so waiting indefinitely is safe and preserves every chunk.
+        match task_handle.await {
+            Ok(()) => {
                 info!("✅ ALL transcription chunks processed successfully - no data lost");
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 warn!("⚠️ Transcription task completed with error: {:?}", e);
                 // Continue anyway - the worker may have processed most chunks
-            }
-            Err(_) => {
-                warn!("⏱️ Transcription timeout (10 minutes) reached, continuing shutdown to prevent indefinite hang");
-                // Continue shutdown even on timeout - better to lose some chunks than hang forever
             }
         }
 

@@ -10,13 +10,18 @@ impl TranscriptsRepository {
     /// Saves a new meeting and its associated transcript segments.
     /// This function uses a transaction to ensure that either both the meeting
     /// and all its transcripts are saved, or none of them are.
+    /// * `transcription_status` - "completed" (default, when `None`) for the normal flow
+    ///   where transcripts are provided; pass `Some("pending")` when saving a "record only"
+    ///   meeting (empty `transcripts`) that will be transcribed later on demand.
     pub async fn save_transcript(
         pool: &SqlitePool,
         meeting_title: &str,
         transcripts: &[TranscriptSegment],
         folder_path: Option<String>,
+        transcription_status: Option<String>,
     ) -> Result<String, SqlxError> {
         let meeting_id = format!("meeting-{}", Uuid::new_v4());
+        let transcription_status = transcription_status.unwrap_or_else(|| "completed".to_string());
 
         let mut conn = pool.acquire().await?;
         let mut transaction = conn.begin().await?;
@@ -25,13 +30,14 @@ impl TranscriptsRepository {
 
         // 1. Create the new meeting
         let result = sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, transcription_status) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
         .bind(meeting_title)
         .bind(now)
         .bind(now)
         .bind(&folder_path)
+        .bind(&transcription_status)
         .execute(&mut *transaction)
         .await;
 
@@ -47,8 +53,8 @@ impl TranscriptsRepository {
         for segment in transcripts {
             let transcript_id = format!("transcript-{}", Uuid::new_v4());
             let result = sqlx::query(
-                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&transcript_id)
             .bind(&meeting_id)
@@ -57,6 +63,7 @@ impl TranscriptsRepository {
             .bind(segment.audio_start_time)
             .bind(segment.audio_end_time)
             .bind(segment.duration)
+            .bind(&segment.speaker)
             .execute(&mut *transaction)
             .await;
 

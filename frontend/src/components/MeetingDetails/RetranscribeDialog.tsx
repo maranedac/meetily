@@ -30,6 +30,11 @@ interface RetranscribeDialogProps {
   meetingId: string;
   meetingFolderPath: string | null;
   onComplete?: () => void;
+  // 'transcribe' = first transcription of a "record only" (audio-only) meeting;
+  // 'enhance' (default) = re-process an already-transcribed meeting with different
+  // settings. Same underlying command either way - the backend auto-detects whether
+  // separate mic/system tracks exist and preserves speaker attribution if so.
+  mode?: 'transcribe' | 'enhance';
 }
 
 interface RetranscriptionProgress {
@@ -57,7 +62,9 @@ export function RetranscribeDialog({
   meetingId,
   meetingFolderPath,
   onComplete,
+  mode = 'enhance',
 }: RetranscribeDialogProps) {
+  const isTranscribeMode = mode === 'transcribe';
   const { selectedLanguage, transcriptModelConfig } = useConfig();
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState<RetranscriptionProgress | null>(null);
@@ -118,10 +125,12 @@ export function RetranscribeDialog({
     }
   }, [open, selectedLanguage, transcriptModelConfig, fetchModels]);
 
-  // Listen for retranscription events
+  // Listen for retranscription events - intentionally NOT gated on `open`: the dialog
+  // can be closed while a job keeps running in the background (see handleOpenChange
+  // below), and this component stays mounted for the meeting page's lifetime either
+  // way, so staying subscribed here is what lets the completion toast/refetch still
+  // fire even after the user has closed the dialog and moved on to something else.
   useEffect(() => {
-    if (!open) return;
-
     const unlisteners: UnlistenFn[] = [];
     const cleanedUpRef = { current: false };
 
@@ -154,7 +163,9 @@ export function RetranscribeDialog({
 
             setIsProcessing(false);
             toast.success(
-              `Retranscription complete! ${event.payload.segments_count} segments created.`
+              isTranscribeMode
+                ? `Transcription complete! ${event.payload.segments_count} segments created.`
+                : `Retranscription complete! ${event.payload.segments_count} segments created.`
             );
             onCompleteRef.current?.();
             onOpenChangeRef.current(false);
@@ -194,7 +205,7 @@ export function RetranscribeDialog({
       cleanedUpRef.current = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [open, meetingId]);
+  }, [meetingId]);
 
   const handleStartRetranscription = async () => {
     if (!meetingFolderPath) {
@@ -244,24 +255,22 @@ export function RetranscribeDialog({
     onOpenChange(false);
   };
 
-  // Prevent closing during processing
+  // Closing the dialog while processing does NOT cancel the job - it keeps running
+  // in the background (the backend already fire-and-forgets this work), so you can
+  // go do something else (start a new recording, browse other meetings) and still
+  // get the completion toast when it's done, thanks to the listeners above staying
+  // subscribed regardless of `open`. Use the explicit "Cancel" button to actually
+  // stop it.
   const handleOpenChange = (newOpen: boolean) => {
-    if (!newOpen && isProcessing) {
-      return;
-    }
     onOpenChange(newOpen);
   };
 
-  const handleEscapeKeyDown = (event: KeyboardEvent) => {
-    if (isProcessing) {
-      event.preventDefault();
-    }
+  const handleEscapeKeyDown = (_event: KeyboardEvent) => {
+    // No-op: closing (via Escape) while processing is allowed, see handleOpenChange
   };
 
-  const handleInteractOutside = (event: Event) => {
-    if (isProcessing) {
-      event.preventDefault();
-    }
+  const handleInteractOutside = (_event: Event) => {
+    // No-op: clicking outside while processing is allowed, see handleOpenChange
   };
 
   return (
@@ -276,17 +285,17 @@ export function RetranscribeDialog({
             {isProcessing ? (
               <>
                 <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-                Retranscribing...
+                {isTranscribeMode ? 'Transcribing...' : 'Retranscribing...'}
               </>
             ) : error ? (
               <>
                 <AlertCircle className="h-5 w-5 text-red-600" />
-                Retranscription Failed
+                {isTranscribeMode ? 'Transcription Failed' : 'Retranscription Failed'}
               </>
             ) : (
               <>
                 <RefreshCw className="h-5 w-5 text-blue-600" />
-                Retranscribe Meeting
+                {isTranscribeMode ? 'Transcribe Recording' : 'Retranscribe Meeting'}
               </>
             )}
           </DialogTitle>
@@ -294,8 +303,10 @@ export function RetranscribeDialog({
             {isProcessing
               ? progress?.message || 'Processing audio...'
               : error
-                ? 'An error occurred during retranscription'
-                : 'Re-process the audio with different language settings'}
+                ? `An error occurred during ${isTranscribeMode ? 'transcription' : 'retranscription'}`
+                : isTranscribeMode
+                  ? 'This meeting was recorded audio-only. Choose a model and language to generate its transcript.'
+                  : 'Re-process the audio with different language settings'}
           </DialogDescription>
         </DialogHeader>
 
@@ -399,7 +410,7 @@ export function RetranscribeDialog({
                 disabled={!meetingFolderPath}
               >
                 <RefreshCw className="h-4 w-4 mr-2" />
-                Start Retranscription
+                {isTranscribeMode ? 'Start Transcription' : 'Start Retranscription'}
               </Button>
             </>
           )}

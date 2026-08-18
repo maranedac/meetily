@@ -6,7 +6,6 @@ import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { storageService } from '@/services/storageService';
-import { transcriptService } from '@/services/transcriptService';
 import Analytics from '@/lib/analytics';
 import {
   applyPinnedSummaryLanguageToMeeting,
@@ -48,7 +47,8 @@ export function useRecordingStop(
     setStatus,
     isStopping,
     isProcessing: isProcessingTranscript,
-    isSaving: isSavingTranscript
+    isSaving: isSavingTranscript,
+    isTranscribeLive,
   } = recordingState;
 
   const {
@@ -145,100 +145,59 @@ export function useRecordingStop(
       // This function only handles post-stop processing (transcription wait, API call, navigation)
       console.log('Recording already stopped by RecordingControls, processing transcription...');
 
-      // Wait for transcription to complete
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Waiting for transcription...');
-      console.log('Waiting for transcription to complete...');
+      if (isTranscribeLive) {
+        // NOTE: By the time we get here, `invoke('stop_recording')` (called by
+        // RecordingControls.stopRecordingAction before onRecordingStop) has already
+        // awaited the Rust-side transcription task to completion with no timeout
+        // (see recording_commands.rs::stop_recording) — every transcript-update event
+        // has already been emitted. There is nothing left to poll for; the old status
+        // poll here queried a stub Tauri command (`get_transcription_status`) that never
+        // reflected the real queue, so it always "completed" on its first check and only
+        // added artificial delay. We keep a short fixed wait purely to let the last
+        // transcript-update events finish propagating into React state before flushing.
+        setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Finalizing transcript...');
+        await new Promise(resolve => setTimeout(resolve, 500));
 
-      const MAX_WAIT_TIME = 60000; // 60 seconds maximum wait (increased for longer processing)
-      const POLL_INTERVAL = 500; // Check every 500ms
-      let elapsedTime = 0;
-      let transcriptionComplete = false;
+        // Final buffer flush: process ALL remaining transcripts regardless of timing
+        const flushStartTime = Date.now();
+        console.log('🔄 Final buffer flush: forcing processing of any remaining transcripts...', {
+          flush_started_at: new Date(flushStartTime).toISOString(),
+          time_since_stop: flushStartTime - stopStartTime,
+          current_transcript_count: transcriptsRef.current.length
+        });
+        setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
+        flushBuffer();
+        const flushEndTime = Date.now();
+        console.log('✅ Final buffer flush completed', {
+          flush_duration: flushEndTime - flushStartTime,
+          total_time_since_stop: flushEndTime - stopStartTime,
+          final_transcript_count: transcriptsRef.current.length
+        });
 
-      // Listen for transcription-complete event
-      const unlistenComplete = await listen('transcription-complete', () => {
-        console.log('Received transcription-complete event');
-        transcriptionComplete = true;
-      });
+        // NOTE: Status remains PROCESSING_TRANSCRIPTS until we start saving
 
-      // Poll for transcription status
-      while (elapsedTime < MAX_WAIT_TIME && !transcriptionComplete) {
-        try {
-          const status = await transcriptService.getTranscriptionStatus();
-          console.log('Transcription status:', status);
-
-          // Check if transcription is complete
-          if (!status.is_processing && status.chunks_in_queue === 0) {
-            console.log('Transcription complete - no active processing and no chunks in queue');
-            transcriptionComplete = true;
-            break;
-          }
-
-          // If no activity for more than 8 seconds and no chunks in queue, consider it done (increased from 5s to 8s)
-          if (status.last_activity_ms > 8000 && status.chunks_in_queue === 0) {
-            console.log('Transcription likely complete - no recent activity and empty queue');
-            transcriptionComplete = true;
-            break;
-          }
-
-          // Update user with current status
-          if (status.chunks_in_queue > 0) {
-            console.log(`Processing ${status.chunks_in_queue} remaining audio chunks...`);
-            setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, `Processing ${status.chunks_in_queue} remaining chunks...`);
-          }
-
-          // Wait before next check
-          await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
-          elapsedTime += POLL_INTERVAL;
-        } catch (error) {
-          console.error('Error checking transcription status:', error);
-          break;
-        }
-      }
-
-      // Clean up listener
-      console.log('🧹 CLEANUP: Cleaning up transcription-complete listener');
-      unlistenComplete();
-
-      if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
-        console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
+        // Wait a bit more to ensure all transcript state updates have been processed
+        console.log('Waiting for transcript state updates to complete...');
+        await new Promise(resolve => setTimeout(resolve, 500));
       } else {
-        console.log('✅ Transcription completed after', elapsedTime, 'ms');
-        // Wait longer for any late transcript segments (increased from 1s to 4s)
-        console.log('⏳ Waiting for late transcript segments...');
-        await new Promise(resolve => setTimeout(resolve, 4000));
+        // "Record only" mode: no live transcript-update events ever fired, so there's
+        // nothing to wait for or flush. The meeting is saved audio-only below and can
+        // be transcribed later on demand from meeting-details ("Transcribe" button).
+        console.log('🔇 Record-only mode: skipping transcription wait/flush');
       }
-
-      // Final buffer flush: process ALL remaining transcripts regardless of timing
-      const flushStartTime = Date.now();
-      console.log('🔄 Final buffer flush: forcing processing of any remaining transcripts...', {
-        flush_started_at: new Date(flushStartTime).toISOString(),
-        time_since_stop: flushStartTime - stopStartTime,
-        current_transcript_count: transcriptsRef.current.length
-      });
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
-      flushBuffer();
-      const flushEndTime = Date.now();
-      console.log('✅ Final buffer flush completed', {
-        flush_duration: flushEndTime - flushStartTime,
-        total_time_since_stop: flushEndTime - stopStartTime,
-        final_transcript_count: transcriptsRef.current.length
-      });
-
-      // NOTE: Status remains PROCESSING_TRANSCRIPTS until we start saving
-
-      // Wait a bit more to ensure all transcript state updates have been processed
-      console.log('Waiting for transcript state updates to complete...');
-      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
       // This ensures user sees all transcripts streaming in before database save
-      if (isCallApi && transcriptionComplete == true) {
+      if (isCallApi) {
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 
-        // Get fresh transcript state (ALL transcripts including late ones)
-        const freshTranscripts = [...transcriptsRef.current];
+        // Get fresh transcript state (ALL transcripts including late ones). Record-only
+        // mode never received any transcript-update events, so this is empty by
+        // construction - saved explicitly as 'pending' so meeting-details offers the
+        // "Transcribe" action instead of showing an empty transcript.
+        const freshTranscripts = isTranscribeLive ? [...transcriptsRef.current] : [];
 
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
@@ -256,7 +215,8 @@ export function useRecordingStop(
           const responseData = await storageService.saveMeeting(
             savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
             freshTranscripts,
-            folderPath
+            folderPath,
+            isTranscribeLive ? undefined : 'pending'
           );
 
           const meetingId = responseData.meeting_id;

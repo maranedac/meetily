@@ -49,6 +49,7 @@ pub mod anthropic;
 pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
+pub mod diarization_engine;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -471,6 +472,17 @@ pub fn run() {
                 }
             });
 
+            // Set diarization (speaker embedding) models directory
+            diarization_engine::commands::set_models_directory(&_app.handle());
+
+            // Initialize diarization engine on startup (model itself is downloaded
+            // on demand from Settings - this just sets up the directory/state)
+            tauri::async_runtime::spawn(async {
+                if let Err(e) = diarization_engine::commands::diarization_init().await {
+                    log::error!("Failed to initialize diarization engine on startup: {}", e);
+                }
+            });
+
             // Initialize ModelManager for summary engine (async, non-blocking)
             let app_handle_for_model_manager = _app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -582,6 +594,12 @@ pub fn run() {
             parakeet_engine::commands::parakeet_cancel_download,
             parakeet_engine::commands::parakeet_delete_corrupted_model,
             parakeet_engine::commands::open_parakeet_models_folder,
+            // Diarization (speaker embedding) engine commands
+            diarization_engine::commands::diarization_get_available_models,
+            diarization_engine::commands::diarization_is_model_ready,
+            diarization_engine::commands::diarization_download_model,
+            diarization_engine::commands::diarization_cancel_download,
+            diarization_engine::commands::diarization_delete_model,
             // Parallel processing commands
             whisper_engine::parallel_commands::initialize_parallel_processor,
             whisper_engine::parallel_commands::start_parallel_processing,
@@ -670,6 +688,9 @@ pub fn run() {
             // Template commands
             summary::template_commands::api_list_templates,
             summary::template_commands::api_get_template_details,
+            summary::template_commands::api_get_template_full,
+            summary::template_commands::api_save_template,
+            summary::template_commands::api_delete_template,
             summary::template_commands::api_validate_template,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
@@ -742,6 +763,7 @@ pub fn run() {
             audio::retranscription::start_retranscription_command,
             audio::retranscription::cancel_retranscription_command,
             audio::retranscription::is_retranscription_in_progress_command,
+            audio::retranscription::start_speaker_identification_command,
             // Import audio commands
             audio::import::select_and_validate_audio_command,
             audio::import::validate_audio_file_command,

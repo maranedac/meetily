@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical, FileText } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -10,6 +10,8 @@ import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { BetaSettings } from '@/components/BetaSettings';
+import { TemplateManager } from '@/components/TemplateManager/TemplateManager';
+import { DiarizationModelManager } from '@/components/DiarizationModelManager';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
@@ -19,6 +21,7 @@ const TABS = [
   { value: 'recording', label: 'Recordings', icon: Mic },
   { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
   { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
+  { value: 'templates', label: 'Templates', icon: FileText },
   { value: 'beta', label: 'Beta', icon: FlaskConical }
 ] as const;
 
@@ -120,9 +123,20 @@ export default function SettingsPage() {
                 transcriptModelConfig={transcriptModelConfig}
                 setTranscriptModelConfig={setTranscriptModelConfig}
               />
+              <div className="mt-8 pt-6 border-t border-gray-200">
+                <h3 className="text-base font-medium text-gray-900 mb-1">Speaker Identification</h3>
+                <p className="text-sm text-gray-600 mb-4">
+                  Separate from the transcription model above - identifies distinct speakers
+                  within recordings made in "record only" mode.
+                </p>
+                <DiarizationModelManager />
+              </div>
             </TabsContent>
             <TabsContent value="summaryModels">
               <SummaryModelSettings />
+            </TabsContent>
+            <TabsContent value="templates" className="mt-6">
+              <TemplateManager />
             </TabsContent>
             <TabsContent value="beta" className="mt-6">
               <BetaSettings />

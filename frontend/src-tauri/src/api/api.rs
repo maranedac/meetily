@@ -137,6 +137,13 @@ pub struct MeetingTranscript {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    // Which audio source this segment came from: "mic" (you) or "system" (others)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+    // Individual speaker identity within "system" (e.g. "Speaker 2"), set only
+    // when offline diarization has run for this meeting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_label: Option<String>,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -148,6 +155,9 @@ pub struct MeetingMetadata {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder_path: Option<String>,
+    // "completed" (has a transcript) | "pending" (audio-only, "record only" mode,
+    // not yet transcribed)
+    pub transcription_status: String,
 }
 
 /// Paginated transcripts response with total count
@@ -188,6 +198,15 @@ pub struct TranscriptSegment {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    // Which audio source this segment came from: "mic" (the user) or "system"
+    // (everyone else, via loopback/system audio). None for legacy data or
+    // sources where the distinction isn't available (e.g. file import).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+    // Individual speaker identity within "system" (e.g. "Speaker 2"), set only
+    // when offline diarization has run for this meeting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_label: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -828,6 +847,7 @@ pub async fn api_get_meeting_metadata<R: Runtime>(
                 created_at: meeting.created_at.0.to_rfc3339(),
                 updated_at: meeting.updated_at.0.to_rfc3339(),
                 folder_path: meeting.folder_path,
+                transcription_status: meeting.transcription_status,
             })
         }
         Ok(None) => {
@@ -878,6 +898,8 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     audio_start_time: t.audio_start_time,
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
+                    speaker: t.speaker,
+                    speaker_label: t.speaker_label,
                 })
                 .collect::<Vec<_>>();
 
@@ -934,6 +956,9 @@ pub async fn api_save_transcript<R: Runtime>(
     transcripts: Vec<serde_json::Value>,
     folder_path: Option<String>,
     auth_token: Option<String>,
+    // "pending" for a "record only" meeting saved with no transcript yet (see
+    // useRecordingStop.ts); omitted/None defaults to "completed" in the repository.
+    transcription_status: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
         "api_save_transcript called for meeting: {}, transcripts: {}, folder_path: {:?}, auth_token: {}",
@@ -978,6 +1003,7 @@ pub async fn api_save_transcript<R: Runtime>(
         &meeting_title,
         &transcripts_to_save,
         folder_path,
+        transcription_status,
     )
     .await
     {
@@ -1016,7 +1042,7 @@ pub async fn open_meeting_folder<R: Runtime>(
 
     // Get meeting with folder_path
     let meeting: Option<MeetingModel> = sqlx::query_as(
-        "SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?",
+        "SELECT id, title, created_at, updated_at, folder_path, transcription_status FROM meetings WHERE id = ?",
     )
     .bind(&meeting_id)
     .fetch_optional(pool)

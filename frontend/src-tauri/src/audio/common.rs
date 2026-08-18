@@ -48,7 +48,21 @@ pub(crate) async fn unload_engine_after_batch(use_parakeet: bool) {
 
 /// Create transcript segments from transcription results.
 /// Each tuple is (text, start_ms, end_ms) from VAD timestamps.
+///
+/// File import/retranscription usually operates on a single, already-mixed audio
+/// source, where there's no mic/system distinction to attribute - hence no speaker.
 pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64)]) -> Vec<TranscriptSegment> {
+    create_transcript_segments_with_speaker(transcripts, None)
+}
+
+/// Same as `create_transcript_segments`, but tags every resulting segment with the
+/// given speaker ("mic"/"system"). Used when retranscribing a "record only" meeting
+/// that kept its raw mic/system tracks separate (see retranscription.rs) - unlike the
+/// single-file path above, here the source IS known, so it should be preserved.
+pub(crate) fn create_transcript_segments_with_speaker(
+    transcripts: &[(String, f64, f64)],
+    speaker: Option<&str>,
+) -> Vec<TranscriptSegment> {
     transcripts
         .iter()
         .map(|(text, start_ms, end_ms)| {
@@ -63,6 +77,11 @@ pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64)]) -> 
                 audio_start_time: Some(start_seconds),
                 audio_end_time: Some(end_seconds),
                 duration: Some(duration),
+                speaker: speaker.map(|s| s.to_string()),
+                // Diarization (if it runs at all) is a separate pass appended after
+                // these segments are saved - see run_retranscription in
+                // retranscription.rs - so it's never known yet at creation time.
+                speaker_label: None,
             }
         })
         .collect()
@@ -85,7 +104,9 @@ pub(crate) fn write_transcripts_json(folder: &Path, segments: &[TranscriptSegmen
                 "audio_start_time": s.audio_start_time,
                 "audio_end_time": s.audio_end_time,
                 "duration": s.duration,
-                "sequence_id": i
+                "sequence_id": i,
+                "speaker": s.speaker,
+                "speaker_label": s.speaker_label
             })
         }).collect::<Vec<_>>()
     });
