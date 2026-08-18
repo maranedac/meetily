@@ -1,3 +1,5 @@
+> 🔱 **This is a personal fork** of [Zackriya-Solutions/meetily](https://github.com/Zackriya-Solutions/meetily), maintained by [@maranedac](https://github.com/maranedac) as a portfolio project. It is **not affiliated with or endorsed by Zackriya Solutions**, and is not synced with their PRO/Enterprise offerings mentioned below. See [What's Different in This Fork](#whats-different-in-this-fork) for the added features, or head to the [upstream repo](https://github.com/Zackriya-Solutions/meetily) for the official project.
+
 <div align="center" style="border-bottom: none">
     <h1>
         <img src="docs/Meetily-6.png" style="border-radius: 10px;" />
@@ -51,6 +53,7 @@ A privacy-first AI meeting assistant that captures, transcribes, and summarizes 
 <details>
 <summary>Table of Contents</summary>
 
+- [What's Different in This Fork](#whats-different-in-this-fork)
 - [Introduction](#introduction)
 - [Why Meetily?](#why-meetily)
 - [Features](#features)
@@ -63,6 +66,20 @@ A privacy-first AI meeting assistant that captures, transcribes, and summarizes 
 - [License](#license)
 
 </details>
+
+## What's Different in This Fork
+
+This fork adds speaker attribution and diarization, plus a couple of workflow features, on top of upstream Meetily Community Edition. Everything below runs fully locally, same as the rest of the app — no new cloud dependency was introduced.
+
+- 🗣️ **Speaker attribution ("You" vs "Others")** — mic and system audio are transcribed as two independent streams instead of being pre-mixed, so every transcript segment is tagged with its real source for free, no acoustic diarization needed.
+- 🧑‍🤝‍🧑 **Offline speaker diarization** — for "record only" meetings, the isolated system-audio track is run through a local [WeSpeaker ResNet34](https://github.com/k2-fsa/sherpa-onnx) embedding model (ONNX, ~25MB, downloaded on demand) plus hand-rolled agglomerative clustering, splitting the generic "Others" bucket into "Speaker 1", "Speaker 2", etc.
+- 🔁 **"Identify speakers" for live-transcribed meetings** — a standalone action that runs the same diarization against an already-transcribed meeting's system track and patches speaker labels in place, no re-transcription required.
+- ⏺️ **"Record only" mode** — decouples recording from live transcription (VAD + Whisper/Parakeet), so a slow model or long recording no longer competes with capture for CPU; transcribe later on demand.
+- 📝 **Summary template manager** — view, create, edit, and delete custom summary templates (sections + LLM instructions) from Settings, instead of being limited to the built-in templates.
+
+See [`CLAUDE.md`](CLAUDE.md) for the full technical write-up of each feature, including known limitations. Notably, upstream currently lists speaker identification as a PRO-only, "Coming Soon" feature (see [Meetily PRO](#meetily-pro) below) — this fork implements a local, open-source version of it in the Community Edition codebase instead.
+
+Built with the assistance of [Claude Code](https://claude.com/claude-code).
 
 ## Introduction
 
@@ -102,6 +119,8 @@ Whether you're a defense consultant, enterprise executive, legal professional, o
 - **Flexible AI Provider Support:** Choose from Ollama (local), Claude, Groq, OpenRouter, or use your own OpenAI-compatible endpoint.
 
 ## Installation
+
+> **Note:** This fork has no prebuilt installers of its own — the links below point to upstream's official releases, which do **not** include this fork's features (see [What's Different in This Fork](#whats-different-in-this-fork)). To try the fork's additions, build from source using this repo instead of upstream's.
 
 ### 🪟 **Windows**
 
@@ -260,11 +279,13 @@ MIT License - Feel free to use this project for your own purposes.
 
 ## Acknowledgments
 
+- This fork is based on [Zackriya-Solutions/meetily](https://github.com/Zackriya-Solutions/meetily) — all credit for the original architecture, app, and Community Edition goes to that project and its contributors. This fork exists to showcase added features and is not an official release.
 - We borrowed some code from [Whisper.cpp](https://github.com/ggerganov/whisper.cpp).
 - We borrowed some code from [Screenpipe](https://github.com/mediar-ai/screenpipe).
 - We borrowed some code from [transcribe-rs](https://crates.io/crates/transcribe-rs).
 - Thanks to **NVIDIA** for developing the **Parakeet** model.
 - Thanks to [istupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx) for providing the **ONNX conversion** of the Parakeet model.
+- Speaker diarization in this fork uses [WeSpeaker](https://github.com/wenet-e2e/wespeaker) ResNet34 embeddings via the [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) model release, and [kaldi-native-fbank](https://github.com/csukuangfj/kaldi-native-fbank) for feature extraction.
 
 ## Star History
 
