@@ -418,11 +418,23 @@ impl SummaryService {
 
             match model {
                 Ok(model_def) => {
-                    // Reserve 300 tokens for prompt overhead
-                    let optimal = model_def.context_size.saturating_sub(300) as usize;
+                    // Reserve room for the generated output (client.rs always requests
+                    // models::DEFAULT_MAX_TOKENS) plus ~300 tokens for the system prompt/
+                    // chat template wrapper, so input + output never exceeds the model's
+                    // n_ctx. The old flat "reserve 300" only covered the prompt overhead
+                    // and ignored the output budget entirely - for qwen3.5:4b (32768 ctx,
+                    // 4096 max_tokens) that let chunks grow up to ~32468 input tokens,
+                    // leaving ~300 tokens of context for a 4096-token generation. Long
+                    // meetings routinely produce chunks in that size range, and llama.cpp
+                    // hits a hard context-overflow failure when input+output can't fit -
+                    // observed in practice as the summary generation silently failing on
+                    // long transcripts (llama-helper's stdout closes, "process may have
+                    // crashed" - see sidecar.rs's send_request).
+                    let reserve = models::DEFAULT_MAX_TOKENS as u32 + 300;
+                    let optimal = model_def.context_size.saturating_sub(reserve) as usize;
                     info!(
-                        "✓ Using BuiltInAI context size: {} tokens (chunk size: {})",
-                        model_def.context_size, optimal
+                        "✓ Using BuiltInAI context size: {} tokens (chunk size: {}, reserved {} for output+overhead)",
+                        model_def.context_size, optimal, reserve
                     );
                     optimal
                 }

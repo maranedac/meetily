@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw, Mic, Users } from 'lucide-react';
+import { Copy, FolderOpen, RefreshCw, Mic, Users, Loader2 } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { DiarizeDialog } from './DiarizeDialog';
@@ -34,6 +34,11 @@ export function TranscriptButtonGroup({
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
   const [showTranscribeDialog, setShowTranscribeDialog] = useState(false);
   const [showDiarizeDialog, setShowDiarizeDialog] = useState(false);
+  // Mirrored from the dialogs' own isProcessing state (see onProcessingChange below) so
+  // the triggering button keeps showing a spinner even after the dialog is closed - a
+  // retranscription/diarization job keeps running in the background once started.
+  const [isRetranscribing, setIsRetranscribing] = useState(false);
+  const [isIdentifyingSpeakers, setIsIdentifyingSpeakers] = useState(false);
   const isPendingTranscription = transcriptionStatus === 'pending';
 
   const handleRetranscribeComplete = useCallback(async () => {
@@ -83,10 +88,15 @@ export function TranscriptButtonGroup({
               Analytics.trackButtonClick('transcribe_recording', 'meeting_details');
               setShowTranscribeDialog(true);
             }}
-            title="Transcribe this audio-only recording"
+            disabled={isIdentifyingSpeakers}
+            title={isRetranscribing ? 'Transcription in progress - click to view' : 'Transcribe this audio-only recording'}
           >
-            <Mic className="xl:mr-2" size={18} />
-            <span className="hidden lg:inline">Transcribe</span>
+            {isRetranscribing ? (
+              <Loader2 className="xl:mr-2 animate-spin" size={18} />
+            ) : (
+              <Mic className="xl:mr-2" size={18} />
+            )}
+            <span className="hidden lg:inline">{isRetranscribing ? 'Transcribing…' : 'Transcribe'}</span>
           </Button>
         )}
 
@@ -99,10 +109,15 @@ export function TranscriptButtonGroup({
               Analytics.trackButtonClick('enhance_transcript', 'meeting_details');
               setShowRetranscribeDialog(true);
             }}
-            title="Re-transcribe with a different model or language"
+            disabled={isIdentifyingSpeakers}
+            title={isRetranscribing ? 'Enhancement in progress - click to view' : 'Re-transcribe with a different model or language'}
           >
-            <RefreshCw className="xl:mr-2" size={18} />
-            <span className="hidden lg:inline">Enhance</span>
+            {isRetranscribing ? (
+              <Loader2 className="xl:mr-2 animate-spin" size={18} />
+            ) : (
+              <RefreshCw className="xl:mr-2" size={18} />
+            )}
+            <span className="hidden lg:inline">{isRetranscribing ? 'Enhancing…' : 'Enhance'}</span>
           </Button>
         )}
 
@@ -115,10 +130,15 @@ export function TranscriptButtonGroup({
               Analytics.trackButtonClick('identify_speakers', 'meeting_details');
               setShowDiarizeDialog(true);
             }}
-            title="Identify individual speakers in the system audio"
+            disabled={isRetranscribing}
+            title={isIdentifyingSpeakers ? 'Speaker identification in progress - click to view' : 'Identify individual speakers in the system audio'}
           >
-            <Users className="xl:mr-2" size={18} />
-            <span className="hidden lg:inline">Speakers</span>
+            {isIdentifyingSpeakers ? (
+              <Loader2 className="xl:mr-2 animate-spin" size={18} />
+            ) : (
+              <Users className="xl:mr-2" size={18} />
+            )}
+            <span className="hidden lg:inline">{isIdentifyingSpeakers ? 'Identifying…' : 'Speakers'}</span>
           </Button>
         )}
       </ButtonGroup>
@@ -130,6 +150,7 @@ export function TranscriptButtonGroup({
           meetingId={meetingId}
           meetingFolderPath={meetingFolderPath}
           onComplete={handleRetranscribeComplete}
+          onProcessingChange={setIsRetranscribing}
           mode="transcribe"
         />
       )}
@@ -141,6 +162,7 @@ export function TranscriptButtonGroup({
           meetingId={meetingId}
           meetingFolderPath={meetingFolderPath}
           onComplete={handleRetranscribeComplete}
+          onProcessingChange={setIsRetranscribing}
         />
       )}
 
@@ -151,6 +173,7 @@ export function TranscriptButtonGroup({
           meetingId={meetingId}
           meetingFolderPath={meetingFolderPath}
           onComplete={handleRetranscribeComplete}
+          onProcessingChange={setIsIdentifyingSpeakers}
         />
       )}
     </div>

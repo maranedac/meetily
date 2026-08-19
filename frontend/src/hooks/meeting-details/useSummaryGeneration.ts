@@ -1,11 +1,11 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Transcript, Summary } from '@/types';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { CurrentMeeting, useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
-import { isOllamaNotInstalledError } from '@/lib/utils';
+import { isOllamaNotInstalledError, formatDuration } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
 import {
   detectAndCacheSummaryLanguage,
@@ -49,17 +49,6 @@ async function resolveSummaryLanguage(
 }
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
-
-/** Formats a duration in milliseconds as a short human string, e.g. "45s", "1m 12s", "2m" */
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.max(1, Math.round(ms / 1000));
-  if (totalSeconds < 60) {
-    return `${totalSeconds}s`;
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
-}
 
 interface UseSummaryGenerationProps {
   meeting: any;
@@ -114,7 +103,237 @@ export function useSummaryGeneration({
     }
   }, [lastGenerationDurationMs]);
 
-  // Unified summary processing logic
+  // Handles one polling update from the backend (cancelled/error/completed), shared
+  // between a freshly-started generation (processSummary) and one this hook resumed
+  // watching because it was already in flight when this meeting page mounted (see
+  // the "resume in-flight generation" effect below).
+  const handlePollingUpdate = useCallback(async (pollingResult: any, isRegeneration: boolean) => {
+    console.log('Summary status:', pollingResult);
+
+    // Handle cancellation
+    if (pollingResult.status === 'cancelled') {
+      console.log('Summary generation was cancelled');
+
+      // Reload summary from database (backend has already restored from backup)
+      try {
+        const existingSummary = await invokeTauri('api_get_summary', {
+          meetingId: meeting.id
+        }) as any;
+
+        if (existingSummary?.data) {
+          console.log('Restored previous summary after cancellation');
+          setAiSummary(existingSummary.data);
+          setSummaryStatus('completed');
+        } else {
+          setSummaryStatus('idle');
+        }
+      } catch (error) {
+        console.error('Failed to reload summary after cancellation:', error);
+        setSummaryStatus('idle');
+      }
+
+      setSummaryError(null);
+      return;
+    }
+
+    // Handle errors
+    if (pollingResult.status === 'error' || pollingResult.status === 'failed') {
+      console.error('Backend returned error:', pollingResult.error);
+      const errorMessage = pollingResult.error || `Summary ${isRegeneration ? 'regeneration' : 'generation'} failed`;
+
+      // If this was a regeneration, try to restore previous summary from database
+      if (isRegeneration) {
+        try {
+          const existingSummary = await invokeTauri('api_get_summary', {
+            meetingId: meeting.id
+          }) as any;
+
+          if (existingSummary?.data) {
+            console.log('Restored previous summary after regeneration failure');
+            setAiSummary(existingSummary.data);
+            setSummaryStatus('completed');
+            setSummaryError(null);
+
+            // Show error toast with restoration message
+            toast.error(`Failed to regenerate summary`, {
+              description: `${errorMessage}. Your previous summary has been restored.`,
+            });
+
+            await Analytics.trackSummaryGenerationCompleted(
+              modelConfig.provider,
+              modelConfig.model,
+              false,
+              undefined,
+              errorMessage
+            );
+            return;
+          }
+        } catch (error) {
+          console.error('Failed to reload summary after error:', error);
+        }
+      }
+
+      // Continue with normal error handling if not regeneration or reload failed
+      setSummaryError(errorMessage);
+      setSummaryStatus('error');
+
+      // Check if this is a "model is required" error
+      const isModelRequiredError = errorMessage.includes('model is required') ||
+        errorMessage.includes('"model":"required"') ||
+        errorMessage.toLowerCase().includes('model') && errorMessage.toLowerCase().includes('required');
+
+      // Show error toast
+      toast.error(`Failed to ${isRegeneration ? 'regenerate' : 'generate'} summary`, {
+        description: errorMessage.includes('Connection refused')
+          ? 'Could not connect to LLM service. Please ensure Ollama or your configured LLM provider is running.'
+          : errorMessage,
+      });
+
+      // Auto-open model settings modal if model is missing
+      if (isModelRequiredError && onOpenModelSettings) {
+        console.log('🔧 Model required error detected, opening model settings...');
+        onOpenModelSettings();
+      }
+
+      await Analytics.trackSummaryGenerationCompleted(
+        modelConfig.provider,
+        modelConfig.model,
+        false,
+        undefined,
+        errorMessage
+      );
+      return;
+    }
+
+    // Handle successful completion
+    if (pollingResult.status === 'completed' && pollingResult.data) {
+      console.log('Summary generation completed:', pollingResult.data);
+
+      // Update meeting title if available
+      const meetingName = pollingResult.data.MeetingName || pollingResult.meetingName;
+      if (meetingName) {
+        updateMeetingTitle(meetingName);
+      }
+
+      // Check if backend returned markdown format (new flow)
+      if (pollingResult.data.markdown) {
+        console.log('Received markdown format from backend');
+        setAiSummary({ markdown: pollingResult.data.markdown } as any);
+
+        const elapsedMs = generationStartRef.current ? Date.now() - generationStartRef.current : null;
+        if (elapsedMs !== null) setLastGenerationDurationMs(elapsedMs);
+
+        setSummaryStatus('completed');
+
+        // Show success toast
+        toast.success('Summary generated successfully!', {
+          description: elapsedMs !== null
+            ? `Completed in ${formatDuration(elapsedMs)}`
+            : 'Your meeting summary is ready',
+          duration: 4000,
+        });
+
+        if (meetingName && onMeetingUpdated) {
+          await onMeetingUpdated();
+        }
+
+        await Analytics.trackSummaryGenerationCompleted(
+          modelConfig.provider,
+          modelConfig.model,
+          true
+        );
+        return;
+      }
+
+      // Legacy format handling
+      const summarySections = Object.entries(pollingResult.data).filter(([key]) => key !== 'MeetingName');
+      const allEmpty = summarySections.every(([, section]) => !(section as any).blocks || (section as any).blocks.length === 0);
+
+      if (allEmpty) {
+        console.error('Summary completed but all sections empty');
+        setSummaryError('Summary generation completed but returned empty content.');
+        setSummaryStatus('error');
+
+        await Analytics.trackSummaryGenerationCompleted(
+          modelConfig.provider,
+          modelConfig.model,
+          false,
+          undefined,
+          'Empty summary generated'
+        );
+        return;
+      }
+
+      // Remove MeetingName from data before formatting
+      const { MeetingName, ...summaryData } = pollingResult.data;
+
+      // Format legacy summary data
+      const formattedSummary: Summary = {};
+      const sectionKeys = pollingResult.data._section_order || Object.keys(summaryData);
+
+      for (const key of sectionKeys) {
+        try {
+          const section = summaryData[key];
+          if (section && typeof section === 'object' && 'title' in section && 'blocks' in section) {
+            const typedSection = section as { title?: string; blocks?: any[] };
+
+            if (Array.isArray(typedSection.blocks)) {
+              formattedSummary[key] = {
+                title: typedSection.title || key,
+                blocks: typedSection.blocks.map((block: any) => ({
+                  ...block,
+                  color: 'default',
+                  content: block?.content?.trim() || ''
+                }))
+              };
+            } else {
+              formattedSummary[key] = {
+                title: typedSection.title || key,
+                blocks: []
+              };
+            }
+          }
+        } catch (error) {
+          console.warn(`Error processing section ${key}:`, error);
+        }
+      }
+
+      setAiSummary(formattedSummary);
+
+      const elapsedMs = generationStartRef.current ? Date.now() - generationStartRef.current : null;
+      if (elapsedMs !== null) setLastGenerationDurationMs(elapsedMs);
+
+      setSummaryStatus('completed');
+
+      // Show success toast
+      toast.success('Summary generated successfully!', {
+        description: elapsedMs !== null
+          ? `Completed in ${formatDuration(elapsedMs)}`
+          : 'Your meeting summary is ready',
+        duration: 4000,
+      });
+
+      await Analytics.trackSummaryGenerationCompleted(
+        modelConfig.provider,
+        modelConfig.model,
+        true
+      );
+
+      if (meetingName && onMeetingUpdated) {
+        await onMeetingUpdated();
+      }
+    }
+  }, [
+    meeting.id,
+    modelConfig,
+    onOpenModelSettings,
+    setAiSummary,
+    updateMeetingTitle,
+    onMeetingUpdated,
+  ]);
+
+  // Unified summary processing logic: kicks off a new generation/regeneration job
+  // on the backend, then hands each polling update to handlePollingUpdate above.
   const processSummary = useCallback(async ({
     transcriptText,
     transcriptTexts,
@@ -182,223 +401,9 @@ export function useSummaryGeneration({
       console.log('Process ID:', process_id);
 
       // Start global polling via context
-      startSummaryPolling(meeting.id, process_id, async (pollingResult) => {
-        console.log('Summary status:', pollingResult);
-
-        // Handle cancellation
-        if (pollingResult.status === 'cancelled') {
-          console.log('Summary generation was cancelled');
-
-          // Reload summary from database (backend has already restored from backup)
-          try {
-            const existingSummary = await invokeTauri('api_get_summary', {
-              meetingId: meeting.id
-            }) as any;
-
-            if (existingSummary?.data) {
-              console.log('Restored previous summary after cancellation');
-              setAiSummary(existingSummary.data);
-              setSummaryStatus('completed');
-            } else {
-              setSummaryStatus('idle');
-            }
-          } catch (error) {
-            console.error('Failed to reload summary after cancellation:', error);
-            setSummaryStatus('idle');
-          }
-
-          setSummaryError(null);
-          return;
-        }
-
-        // Handle errors
-        if (pollingResult.status === 'error' || pollingResult.status === 'failed') {
-          console.error('Backend returned error:', pollingResult.error);
-          const errorMessage = pollingResult.error || `Summary ${isRegeneration ? 'regeneration' : 'generation'} failed`;
-
-          // If this was a regeneration, try to restore previous summary from database
-          if (isRegeneration) {
-            try {
-              const existingSummary = await invokeTauri('api_get_summary', {
-                meetingId: meeting.id
-              }) as any;
-
-              if (existingSummary?.data) {
-                console.log('Restored previous summary after regeneration failure');
-                setAiSummary(existingSummary.data);
-                setSummaryStatus('completed');
-                setSummaryError(null);
-
-                // Show error toast with restoration message
-                toast.error(`Failed to regenerate summary`, {
-                  description: `${errorMessage}. Your previous summary has been restored.`,
-                });
-
-                await Analytics.trackSummaryGenerationCompleted(
-                  modelConfig.provider,
-                  modelConfig.model,
-                  false,
-                  undefined,
-                  errorMessage
-                );
-                return;
-              }
-            } catch (error) {
-              console.error('Failed to reload summary after error:', error);
-            }
-          }
-
-          // Continue with normal error handling if not regeneration or reload failed
-          setSummaryError(errorMessage);
-          setSummaryStatus('error');
-
-          // Check if this is a "model is required" error
-          const isModelRequiredError = errorMessage.includes('model is required') ||
-            errorMessage.includes('"model":"required"') ||
-            errorMessage.toLowerCase().includes('model') && errorMessage.toLowerCase().includes('required');
-
-          // Show error toast
-          toast.error(`Failed to ${isRegeneration ? 'regenerate' : 'generate'} summary`, {
-            description: errorMessage.includes('Connection refused')
-              ? 'Could not connect to LLM service. Please ensure Ollama or your configured LLM provider is running.'
-              : errorMessage,
-          });
-
-          // Auto-open model settings modal if model is missing
-          if (isModelRequiredError && onOpenModelSettings) {
-            console.log('🔧 Model required error detected, opening model settings...');
-            onOpenModelSettings();
-          }
-
-          await Analytics.trackSummaryGenerationCompleted(
-            modelConfig.provider,
-            modelConfig.model,
-            false,
-            undefined,
-            errorMessage
-          );
-          return;
-        }
-
-        // Handle successful completion
-        if (pollingResult.status === 'completed' && pollingResult.data) {
-          console.log('Summary generation completed:', pollingResult.data);
-
-          // Update meeting title if available
-          const meetingName = pollingResult.data.MeetingName || pollingResult.meetingName;
-          if (meetingName) {
-            updateMeetingTitle(meetingName);
-          }
-
-          // Check if backend returned markdown format (new flow)
-          if (pollingResult.data.markdown) {
-            console.log('Received markdown format from backend');
-            setAiSummary({ markdown: pollingResult.data.markdown } as any);
-
-            const elapsedMs = generationStartRef.current ? Date.now() - generationStartRef.current : null;
-            if (elapsedMs !== null) setLastGenerationDurationMs(elapsedMs);
-
-            setSummaryStatus('completed');
-
-            // Show success toast
-            toast.success('Summary generated successfully!', {
-              description: elapsedMs !== null
-                ? `Completed in ${formatDuration(elapsedMs)}`
-                : 'Your meeting summary is ready',
-              duration: 4000,
-            });
-
-            if (meetingName && onMeetingUpdated) {
-              await onMeetingUpdated();
-            }
-
-            await Analytics.trackSummaryGenerationCompleted(
-              modelConfig.provider,
-              modelConfig.model,
-              true
-            );
-            return;
-          }
-
-          // Legacy format handling
-          const summarySections = Object.entries(pollingResult.data).filter(([key]) => key !== 'MeetingName');
-          const allEmpty = summarySections.every(([, section]) => !(section as any).blocks || (section as any).blocks.length === 0);
-
-          if (allEmpty) {
-            console.error('Summary completed but all sections empty');
-            setSummaryError('Summary generation completed but returned empty content.');
-            setSummaryStatus('error');
-
-            await Analytics.trackSummaryGenerationCompleted(
-              modelConfig.provider,
-              modelConfig.model,
-              false,
-              undefined,
-              'Empty summary generated'
-            );
-            return;
-          }
-
-          // Remove MeetingName from data before formatting
-          const { MeetingName, ...summaryData } = pollingResult.data;
-
-          // Format legacy summary data
-          const formattedSummary: Summary = {};
-          const sectionKeys = pollingResult.data._section_order || Object.keys(summaryData);
-
-          for (const key of sectionKeys) {
-            try {
-              const section = summaryData[key];
-              if (section && typeof section === 'object' && 'title' in section && 'blocks' in section) {
-                const typedSection = section as { title?: string; blocks?: any[] };
-
-                if (Array.isArray(typedSection.blocks)) {
-                  formattedSummary[key] = {
-                    title: typedSection.title || key,
-                    blocks: typedSection.blocks.map((block: any) => ({
-                      ...block,
-                      color: 'default',
-                      content: block?.content?.trim() || ''
-                    }))
-                  };
-                } else {
-                  formattedSummary[key] = {
-                    title: typedSection.title || key,
-                    blocks: []
-                  };
-                }
-              }
-            } catch (error) {
-              console.warn(`Error processing section ${key}:`, error);
-            }
-          }
-
-          setAiSummary(formattedSummary);
-
-          const elapsedMs = generationStartRef.current ? Date.now() - generationStartRef.current : null;
-          if (elapsedMs !== null) setLastGenerationDurationMs(elapsedMs);
-
-          setSummaryStatus('completed');
-
-          // Show success toast
-          toast.success('Summary generated successfully!', {
-            description: elapsedMs !== null
-              ? `Completed in ${formatDuration(elapsedMs)}`
-              : 'Your meeting summary is ready',
-            duration: 4000,
-          });
-
-          await Analytics.trackSummaryGenerationCompleted(
-            modelConfig.provider,
-            modelConfig.model,
-            true
-          );
-
-          if (meetingName && onMeetingUpdated) {
-            await onMeetingUpdated();
-          }
-        }
-      });
+      startSummaryPolling(meeting.id, process_id, (pollingResult) =>
+        handlePollingUpdate(pollingResult, isRegeneration)
+      );
     } catch (error) {
       console.error(`Failed to ${isRegeneration ? 'regenerate' : 'generate'} summary:`, error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -424,10 +429,50 @@ export function useSummaryGeneration({
     modelConfig,
     selectedTemplate,
     startSummaryPolling,
-    setAiSummary,
-    updateMeetingTitle,
-    onMeetingUpdated,
+    handlePollingUpdate,
   ]);
+
+  // Resume watching an in-flight summary generation after this meeting page (re)mounts.
+  //
+  // Bug this fixes: SidebarProvider's poll interval (startSummaryPolling) lives above
+  // the meeting-details route and survives navigation, but the `onUpdate` callback it
+  // was given belongs to the useSummaryGeneration instance that started the job. If the
+  // user navigates to another meeting and back, this component unmounts and remounts -
+  // a fresh instance with summaryStatus='idle' and no memory of the still-running job.
+  // The old poll keeps ticking and eventually calls the orphaned instance's setState,
+  // which is a no-op nobody sees: the page silently shows stale content with no loading
+  // indicator, and the completion toast never fires for the user.
+  //
+  // On mount, check whether the backend still has a 'pending' process for this meeting
+  // and, if so, restore summaryStatus and re-attach polling bound to *this* instance -
+  // startSummaryPolling already clears any existing interval for the same meetingId
+  // before starting a new one, so this safely replaces the orphaned poll.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const result = await invokeTauri('api_get_summary', { meetingId: meeting.id }) as any;
+        if (cancelled || result.status !== 'pending') return;
+
+        // The backend intentionally keeps the previous completed result in `data`
+        // while status is 'pending' (see create_or_reset_process's ON CONFLICT
+        // branch) so cancellation/failure can restore it. Its presence here means
+        // there's an existing summary to fall back to if this run also fails.
+        const hasExistingSummary = !!result.data;
+        console.log(`📊 Resuming in-flight summary generation for meeting ${meeting.id}`);
+        setSummaryStatus(hasExistingSummary ? 'regenerating' : 'processing');
+        setSummaryError(null);
+        startSummaryPolling(meeting.id, 'resumed', (pollingResult) =>
+          handlePollingUpdate(pollingResult, hasExistingSummary)
+        );
+      } catch (error) {
+        console.warn('Failed to check for an in-flight summary generation:', error);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [meeting.id, startSummaryPolling, handlePollingUpdate]);
 
   // Helper function to fetch ALL transcripts for summary generation
   const fetchAllTranscripts = useCallback(async (meetingId: string): Promise<Transcript[]> => {

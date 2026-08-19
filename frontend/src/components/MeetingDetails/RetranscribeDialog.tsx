@@ -23,6 +23,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
 import Analytics from '@/lib/analytics';
+import { formatDuration } from '@/lib/utils';
 
 interface RetranscribeDialogProps {
   open: boolean;
@@ -35,6 +36,10 @@ interface RetranscribeDialogProps {
   // settings. Same underlying command either way - the backend auto-detects whether
   // separate mic/system tracks exist and preserves speaker attribution if so.
   mode?: 'transcribe' | 'enhance';
+  // Mirrors isProcessing up to the parent so it can show a persistent indicator
+  // (e.g. a spinner on the button that opens this dialog) even while the dialog
+  // itself is closed - see the "not gated on `open`" listener setup below.
+  onProcessingChange?: (isProcessing: boolean) => void;
 }
 
 interface RetranscriptionProgress {
@@ -63,6 +68,7 @@ export function RetranscribeDialog({
   meetingFolderPath,
   onComplete,
   mode = 'enhance',
+  onProcessingChange,
 }: RetranscribeDialogProps) {
   const isTranscribeMode = mode === 'transcribe';
   const { selectedLanguage, transcriptModelConfig } = useConfig();
@@ -70,6 +76,12 @@ export function RetranscribeDialog({
   const [progress, setProgress] = useState<RetranscriptionProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedLang, setSelectedLang] = useState(selectedLanguage || 'auto');
+
+  // Timestamp (ms) marking when the in-flight job started, used to compute how
+  // long it took once it completes - same pattern as useSummaryGeneration.ts.
+  // Not surfaced as component state since the dialog auto-closes on completion
+  // (see handleOpenChange below) - only the completion toast ever displays it.
+  const jobStartRef = useRef<number | null>(null);
 
   // Use centralized model fetching hook
   const {
@@ -84,8 +96,16 @@ export function RetranscribeDialog({
   // Stable refs for callbacks to avoid listener re-registration
   const onCompleteRef = useRef(onComplete);
   const onOpenChangeRef = useRef(onOpenChange);
+  const onProcessingChangeRef = useRef(onProcessingChange);
   useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
   useEffect(() => { onOpenChangeRef.current = onOpenChange; }, [onOpenChange]);
+  useEffect(() => { onProcessingChangeRef.current = onProcessingChange; }, [onProcessingChange]);
+
+  // Report isProcessing changes to the parent so it can reflect them on the
+  // triggering button even while this dialog is closed.
+  useEffect(() => {
+    onProcessingChangeRef.current?.(isProcessing);
+  }, [isProcessing]);
 
   // Track previous open state to only reset on closed→open transition
   const prevOpenRef = useRef(false);
@@ -108,14 +128,16 @@ export function RetranscribeDialog({
   }, [isParakeetModel, selectedLang]);
 
   // Reset state only when dialog transitions from closed to open
-  // This prevents re-initialization when config changes while dialog is already open
+  // This prevents re-initialization when config changes while dialog is already open.
+  // Skipped entirely if a job is still running in the background (isProcessing) -
+  // reopening the dialog to check progress/cancel should show that in-flight state,
+  // not clobber it back to the initial "choose model/language" form.
   useEffect(() => {
     const wasOpen = prevOpenRef.current;
     prevOpenRef.current = open;
 
-    if (open && !wasOpen) {
+    if (open && !wasOpen && !isProcessing) {
       resetSelection();
-      setIsProcessing(false);
       setProgress(null);
       setError(null);
       setSelectedLang(selectedLanguage || 'auto');
@@ -123,7 +145,7 @@ export function RetranscribeDialog({
       // Fetch available models using centralized hook
       fetchModels();
     }
-  }, [open, selectedLanguage, transcriptModelConfig, fetchModels]);
+  }, [open, isProcessing, selectedLanguage, transcriptModelConfig, fetchModels]);
 
   // Listen for retranscription events - intentionally NOT gated on `open`: the dialog
   // can be closed while a job keeps running in the background (see handleOpenChange
@@ -161,11 +183,16 @@ export function RetranscribeDialog({
               segments_count: event.payload.segments_count.toString()
             });
 
+            const elapsedMs = jobStartRef.current ? Date.now() - jobStartRef.current : null;
+
             setIsProcessing(false);
             toast.success(
               isTranscribeMode
                 ? `Transcription complete! ${event.payload.segments_count} segments created.`
-                : `Retranscription complete! ${event.payload.segments_count} segments created.`
+                : `Retranscription complete! ${event.payload.segments_count} segments created.`,
+              {
+                description: elapsedMs !== null ? `Completed in ${formatDuration(elapsedMs)}` : undefined,
+              }
             );
             onCompleteRef.current?.();
             onOpenChangeRef.current(false);
@@ -216,6 +243,7 @@ export function RetranscribeDialog({
     setIsProcessing(true);
     setError(null);
     setProgress(null);
+    jobStartRef.current = Date.now();
 
     try {
       const languageToSend = isParakeetModel ? null : selectedLang === 'auto' ? null : selectedLang;

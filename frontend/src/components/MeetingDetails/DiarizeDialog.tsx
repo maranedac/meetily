@@ -20,6 +20,10 @@ interface DiarizeDialogProps {
   meetingId: string;
   meetingFolderPath: string | null;
   onComplete?: () => void;
+  // Mirrors isProcessing up to the parent so it can show a persistent indicator
+  // (e.g. a spinner on the button that opens this dialog) even while the dialog
+  // itself is closed - see the "not gated on `open`" listener setup below.
+  onProcessingChange?: (isProcessing: boolean) => void;
 }
 
 interface DiarizationProgress {
@@ -52,6 +56,7 @@ export function DiarizeDialog({
   meetingId,
   meetingFolderPath,
   onComplete,
+  onProcessingChange,
 }: DiarizeDialogProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState<DiarizationProgress | null>(null);
@@ -59,21 +64,31 @@ export function DiarizeDialog({
 
   const onCompleteRef = useRef(onComplete);
   const onOpenChangeRef = useRef(onOpenChange);
+  const onProcessingChangeRef = useRef(onProcessingChange);
   useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
   useEffect(() => { onOpenChangeRef.current = onOpenChange; }, [onOpenChange]);
+  useEffect(() => { onProcessingChangeRef.current = onProcessingChange; }, [onProcessingChange]);
+
+  // Report isProcessing changes to the parent so it can reflect them on the
+  // triggering button even while this dialog is closed.
+  useEffect(() => {
+    onProcessingChangeRef.current?.(isProcessing);
+  }, [isProcessing]);
 
   const prevOpenRef = useRef(false);
 
+  // Skipped entirely if a job is still running in the background (isProcessing) -
+  // reopening the dialog to check progress/cancel should show that in-flight state,
+  // not clobber it back to the initial confirmation screen.
   useEffect(() => {
     const wasOpen = prevOpenRef.current;
     prevOpenRef.current = open;
 
-    if (open && !wasOpen) {
-      setIsProcessing(false);
+    if (open && !wasOpen && !isProcessing) {
       setProgress(null);
       setError(null);
     }
-  }, [open]);
+  }, [open, isProcessing]);
 
   // Not gated on `open` - a job started here can keep running after the dialog is
   // closed (same background-capable pattern as RetranscribeDialog), so the
