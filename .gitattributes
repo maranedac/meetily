@@ -1,0 +1,8 @@
+# sqlx embeds migration file bytes into the compiled binary at build time
+# (sqlx::migrate!() in database/manager.rs) and verifies a checksum of that
+# exact content against what's recorded in each database's _sqlx_migrations
+# table. If Git rewrites these files' line endings (e.g. CRLF on Windows via
+# core.autocrlf=true), the checksum changes and every existing install fails
+# to start with "migration ... was previously applied but has been modified".
+# Force LF so migrations stay byte-stable across platforms and checkouts.
+frontend/src-tauri/migrations/*.sql text eol=lf
