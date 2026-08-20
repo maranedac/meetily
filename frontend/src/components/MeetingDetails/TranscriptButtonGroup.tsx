@@ -3,10 +3,11 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw, Mic, Users, Loader2 } from 'lucide-react';
+import { Copy, FolderOpen, RefreshCw, Mic, Users, Loader2, Tag } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { DiarizeDialog } from './DiarizeDialog';
+import { RenameSpeakersDialog } from './RenameSpeakersDialog';
 
 
 interface TranscriptButtonGroupProps {
@@ -34,6 +35,7 @@ export function TranscriptButtonGroup({
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
   const [showTranscribeDialog, setShowTranscribeDialog] = useState(false);
   const [showDiarizeDialog, setShowDiarizeDialog] = useState(false);
+  const [showRenameDialog, setShowRenameDialog] = useState(false);
   // Mirrored from the dialogs' own isProcessing state (see onProcessingChange below) so
   // the triggering button keeps showing a spinner even after the dialog is closed - a
   // retranscription/diarization job keeps running in the background once started.
@@ -141,6 +143,22 @@ export function TranscriptButtonGroup({
             <span className="hidden lg:inline">{isIdentifyingSpeakers ? 'Identifying…' : 'Speakers'}</span>
           </Button>
         )}
+
+        {!isPendingTranscription && meetingId && transcriptCount > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="xl:px-4"
+            onClick={() => {
+              Analytics.trackButtonClick('rename_speakers', 'meeting_details');
+              setShowRenameDialog(true);
+            }}
+            title="Rename speakers (You/Others/Speaker N) with real names for this meeting"
+          >
+            <Tag className="xl:mr-2" size={18} />
+            <span className="hidden lg:inline">Rename</span>
+          </Button>
+        )}
       </ButtonGroup>
 
       {isPendingTranscription && meetingId && meetingFolderPath && (
@@ -174,6 +192,15 @@ export function TranscriptButtonGroup({
           meetingFolderPath={meetingFolderPath}
           onComplete={handleRetranscribeComplete}
           onProcessingChange={setIsIdentifyingSpeakers}
+        />
+      )}
+
+      {!isPendingTranscription && meetingId && transcriptCount > 0 && (
+        <RenameSpeakersDialog
+          open={showRenameDialog}
+          onOpenChange={setShowRenameDialog}
+          meetingId={meetingId}
+          onComplete={handleRetranscribeComplete}
         />
       )}
     </div>

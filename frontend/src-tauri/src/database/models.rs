@@ -12,6 +12,10 @@ pub struct MeetingModel {
     // "completed" (has a transcript) | "pending" (audio-only, "record only" mode,
     // not yet transcribed - see audio/retranscription.rs and TranscriptButtonGroup.tsx)
     pub transcription_status: String,
+    // Optional single tag for grouping meetings in the sidebar (e.g. "Work",
+    // "Client X"). None for meetings that haven't been tagged. See
+    // api_set_meeting_tag and Sidebar/SidebarProvider.tsx's grouping logic.
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]

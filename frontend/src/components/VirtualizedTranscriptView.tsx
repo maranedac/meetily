@@ -66,12 +66,14 @@ function cleanStopWords(text: string): string {
 // Small badge showing who a segment came from ("mic" = you, "system" = everyone
 // else). When offline diarization has identified individual speakers within
 // "system" (speaker_label, e.g. "Speaker 2"), show that instead of the generic
-// "Others" bucket - still purple, no per-person color for now.
+// "Others" bucket - still purple, no per-person color for now. speaker_label also
+// doubles as a per-meeting rename target for "mic" (see RenameSpeakersDialog),
+// so it takes priority over the "You" default too, not just "Others".
 function SpeakerBadge({ speaker, speakerLabel }: { speaker?: 'mic' | 'system'; speakerLabel?: string }) {
     if (!speaker) return null;
 
     const isYou = speaker === 'mic';
-    const label = isYou ? 'You' : (speakerLabel || 'Others');
+    const label = speakerLabel || (isYou ? 'You' : 'Others');
     return (
         <span
             className={`inline-block text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-semibold mr-2 align-middle ${

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, Tag as TagIcon, Folder } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -54,7 +54,8 @@ const Sidebar: React.FC = () => {
     isSearching,
     meetings,
     setMeetings,
-    serverAddress
+    serverAddress,
+    refetchMeetings
   } = useSidebar();
 
   // Get recording state from RecordingStateContext (single source of truth)
@@ -84,6 +85,22 @@ const Sidebar: React.FC = () => {
     currentTitle: ''
   });
   const [editingTitle, setEditingTitle] = useState<string>('');
+
+  // State for tag modal (groups meetings in the sidebar - see
+  // SidebarProvider.tsx's buildGroupedMeetingItems)
+  const [tagModalState, setTagModalState] = useState<{ isOpen: boolean; meetingId: string | null }>({
+    isOpen: false,
+    meetingId: null
+  });
+  const [editingTag, setEditingTag] = useState<string>('');
+
+  // State for renaming an entire tag group at once (the pencil on a tag-folder
+  // header), as opposed to editingTag above which only re-tags one meeting.
+  const [renameTagModalState, setRenameTagModalState] = useState<{ isOpen: boolean; oldTag: string | null }>({
+    isOpen: false,
+    oldTag: null
+  });
+  const [renamingTagValue, setRenamingTagValue] = useState<string>('');
 
   // Ensure 'meetings' folder is always expanded
   useEffect(() => {
@@ -421,6 +438,87 @@ const Sidebar: React.FC = () => {
     setEditingTitle('');
   };
 
+  // Handle tag modal (grouping in the sidebar)
+  const handleTagStart = (meetingId: string) => {
+    const currentTag = meetings.find((m: CurrentMeeting) => m.id === meetingId)?.tag || '';
+    setTagModalState({ isOpen: true, meetingId });
+    setEditingTag(currentTag);
+  };
+
+  const handleTagConfirm = async () => {
+    const meetingId = tagModalState.meetingId;
+    if (!meetingId) return;
+
+    const newTag = editingTag.trim();
+
+    try {
+      await invoke('api_set_meeting_tag', {
+        meetingId,
+        tag: newTag || null,
+      });
+
+      const updatedMeetings = meetings.map((m: CurrentMeeting) =>
+        m.id === meetingId ? { ...m, tag: newTag || undefined } : m
+      );
+      setMeetings(updatedMeetings);
+
+      Analytics.trackButtonClick('tag_meeting', 'sidebar');
+      toast.success(newTag ? `Tagged as "${newTag}"` : 'Tag removed');
+
+      setTagModalState({ isOpen: false, meetingId: null });
+      setEditingTag('');
+    } catch (error) {
+      console.error('Failed to update meeting tag:', error);
+      toast.error("Failed to update tag", {
+        description: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
+  const handleTagCancel = () => {
+    setTagModalState({ isOpen: false, meetingId: null });
+    setEditingTag('');
+  };
+
+  // Handle renaming a whole tag group (all meetings sharing it at once)
+  const handleRenameTagStart = (oldTag: string) => {
+    setRenameTagModalState({ isOpen: true, oldTag });
+    setRenamingTagValue(oldTag);
+  };
+
+  const handleRenameTagConfirm = async () => {
+    const oldTag = renameTagModalState.oldTag;
+    const newTag = renamingTagValue.trim();
+    if (!oldTag || !newTag || newTag === oldTag) {
+      setRenameTagModalState({ isOpen: false, oldTag: null });
+      setRenamingTagValue('');
+      return;
+    }
+
+    try {
+      await invoke('api_rename_meeting_tag', { oldTag, newTag });
+
+      // Refetch so every meeting that shared the old tag reflects the new one
+      await refetchMeetings();
+
+      Analytics.trackButtonClick('rename_tag_group', 'sidebar');
+      toast.success(`Renamed "${oldTag}" to "${newTag}"`);
+
+      setRenameTagModalState({ isOpen: false, oldTag: null });
+      setRenamingTagValue('');
+    } catch (error) {
+      console.error('Failed to rename tag group:', error);
+      toast.error("Failed to rename tag", {
+        description: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
+  const handleRenameTagCancel = () => {
+    setRenameTagModalState({ isOpen: false, oldTag: null });
+    setRenamingTagValue('');
+  };
+
   const toggleFolder = (folderId: string) => {
     // Normal toggle behavior for all folders
     const newExpanded = new Set(expandedFolders);
@@ -590,8 +688,23 @@ const Sidebar: React.FC = () => {
                 <Calendar className="w-4 h-4 mr-2" />
               ) : item.id === 'notes' ? (
                 <Calendar className="w-4 h-4 mr-2" />
+              ) : item.id.startsWith('tag-') ? (
+                <Folder className="w-4 h-4 mr-2 text-gray-500" />
               ) : null}
               <span className={depth === 0 ? "" : "font-medium"}>{item.title}</span>
+              {item.id.startsWith('tag-') && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleRenameTagStart(item.title);
+                  }}
+                  className="ml-2 p-1 rounded-md hover:bg-purple-50 hover:text-purple-600 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+                  aria-label="Rename tag group"
+                  title="Rename this tag for all meetings in it"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              )}
               <div className="ml-auto">
                 {isExpanded ? (
                   <ChevronDown className="w-4 h-4 text-gray-500" />
@@ -627,6 +740,17 @@ const Sidebar: React.FC = () => {
                       aria-label="Edit meeting title"
                     >
                       <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleTagStart(item.id);
+                      }}
+                      className="hover:text-purple-600 p-1 rounded-md hover:bg-purple-50 flex-shrink-0"
+                      aria-label="Tag meeting"
+                      title="Tag this meeting to group it in the sidebar"
+                    >
+                      <TagIcon className="w-4 h-4" />
                     </button>
                     <button
                       onClick={(e) => {
@@ -868,6 +992,120 @@ const Sidebar: React.FC = () => {
             </button>
             <button
               onClick={handleEditConfirm}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+            >
+              Save
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tag Meeting Modal */}
+      <Dialog open={tagModalState.isOpen} onOpenChange={(open) => {
+        if (!open) handleTagCancel();
+      }}>
+        <DialogContent className="sm:max-w-[425px]">
+          <VisuallyHidden>
+            <DialogTitle>Tag Meeting</DialogTitle>
+          </VisuallyHidden>
+          <div className="py-4">
+            <h3 className="text-lg font-semibold mb-4">Tag Meeting</h3>
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="meeting-tag" className="block text-sm font-medium text-gray-700 mb-2">
+                  Tag
+                </label>
+                <input
+                  id="meeting-tag"
+                  type="text"
+                  list="existing-meeting-tags"
+                  value={editingTag}
+                  onChange={(e) => setEditingTag(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleTagConfirm();
+                    } else if (e.key === 'Escape') {
+                      handleTagCancel();
+                    }
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="e.g. Work, Client X (leave empty to remove)"
+                  autoFocus
+                />
+                <datalist id="existing-meeting-tags">
+                  {Array.from(new Set(meetings.map((m: CurrentMeeting) => m.tag).filter(Boolean))).map(tag => (
+                    <option key={tag} value={tag} />
+                  ))}
+                </datalist>
+                <p className="mt-2 text-xs text-gray-500">
+                  Meetings sharing a tag are grouped together under "Meeting Notes" in the sidebar.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <button
+              onClick={handleTagCancel}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleTagConfirm}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+            >
+              Save
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename Tag Group Modal */}
+      <Dialog open={renameTagModalState.isOpen} onOpenChange={(open) => {
+        if (!open) handleRenameTagCancel();
+      }}>
+        <DialogContent className="sm:max-w-[425px]">
+          <VisuallyHidden>
+            <DialogTitle>Rename Tag</DialogTitle>
+          </VisuallyHidden>
+          <div className="py-4">
+            <h3 className="text-lg font-semibold mb-4">Rename Tag</h3>
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="tag-rename" className="block text-sm font-medium text-gray-700 mb-2">
+                  New name for "{renameTagModalState.oldTag}"
+                </label>
+                <input
+                  id="tag-rename"
+                  type="text"
+                  value={renamingTagValue}
+                  onChange={(e) => setRenamingTagValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleRenameTagConfirm();
+                    } else if (e.key === 'Escape') {
+                      handleRenameTagCancel();
+                    }
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="New tag name"
+                  autoFocus
+                />
+                <p className="mt-2 text-xs text-gray-500">
+                  This renames the tag for every meeting currently grouped under it.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <button
+              onClick={handleRenameTagCancel}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleRenameTagConfirm}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
             >
               Save

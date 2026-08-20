@@ -62,7 +62,7 @@ impl MeetingsRepository {
 
         // Get meeting details
         let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path, transcription_status FROM meetings WHERE id = ?")
+            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path, transcription_status, tag FROM meetings WHERE id = ?")
                 .bind(meeting_id)
                 .fetch_optional(&mut *transaction)
                 .await?;
@@ -122,7 +122,7 @@ impl MeetingsRepository {
         }
 
         let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path, transcription_status FROM meetings WHERE id = ?")
+            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path, transcription_status, tag FROM meetings WHERE id = ?")
                 .bind(meeting_id)
                 .fetch_optional(pool)
                 .await?;
@@ -196,6 +196,52 @@ impl MeetingsRepository {
         }
         transaction.commit().await?;
         Ok(true)
+    }
+
+    /// Sets or clears a meeting's tag (used to group meetings in the sidebar).
+    /// `tag: None` (or an empty string from the frontend, normalized before this
+    /// call) clears it back to untagged.
+    pub async fn set_meeting_tag(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        tag: Option<&str>,
+    ) -> Result<bool, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol(
+                "meeting_id cannot be empty".to_string(),
+            ));
+        }
+
+        let now = Utc::now().naive_utc();
+
+        let rows_affected = sqlx::query("UPDATE meetings SET tag = ?, updated_at = ? WHERE id = ?")
+            .bind(tag)
+            .bind(now)
+            .bind(meeting_id)
+            .execute(pool)
+            .await?;
+
+        Ok(rows_affected.rows_affected() > 0)
+    }
+
+    /// Renames a tag across every meeting that currently has it - the "rename this
+    /// whole group" action on the sidebar's tag-folder header, complementing
+    /// set_meeting_tag (which only touches one meeting at a time).
+    pub async fn rename_tag(
+        pool: &SqlitePool,
+        old_tag: &str,
+        new_tag: &str,
+    ) -> Result<u64, SqlxError> {
+        let now = Utc::now().naive_utc();
+
+        let rows_affected = sqlx::query("UPDATE meetings SET tag = ?, updated_at = ? WHERE tag = ?")
+            .bind(new_tag)
+            .bind(now)
+            .bind(old_tag)
+            .execute(pool)
+            .await?;
+
+        Ok(rows_affected.rows_affected())
     }
 
     pub async fn update_meeting_name(

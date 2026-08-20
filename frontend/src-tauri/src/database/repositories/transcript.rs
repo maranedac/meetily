@@ -127,6 +127,55 @@ impl TranscriptsRepository {
         Ok(results)
     }
 
+    /// Renames every transcript segment sharing one speaker identity within a meeting
+    /// (e.g. all "Speaker 1" system segments, or all "mic" segments) to a real name.
+    ///
+    /// `old_label` identifies which group to rename: `Some("Speaker 1")` targets rows
+    /// with that exact `speaker_label` (from diarization); `None` targets rows with no
+    /// label yet - the generic "You" (speaker="mic") or "Others" (speaker="system",
+    /// never diarized / diarization found only one voice) buckets. `new_label` is
+    /// stored as the new `speaker_label`, so this reuses the existing column and the
+    /// existing frontend rendering (SpeakerBadge already prefers speaker_label when
+    /// present) - no schema change needed.
+    pub async fn rename_speaker(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        speaker: &str,
+        old_label: Option<&str>,
+        new_label: &str,
+    ) -> Result<u64, SqlxError> {
+        let result = match old_label {
+            Some(old) => {
+                sqlx::query(
+                    "UPDATE transcripts SET speaker_label = ? WHERE meeting_id = ? AND speaker = ? AND speaker_label = ?"
+                )
+                .bind(new_label)
+                .bind(meeting_id)
+                .bind(speaker)
+                .bind(old)
+                .execute(pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "UPDATE transcripts SET speaker_label = ? WHERE meeting_id = ? AND speaker = ? AND speaker_label IS NULL"
+                )
+                .bind(new_label)
+                .bind(meeting_id)
+                .bind(speaker)
+                .execute(pool)
+                .await?
+            }
+        };
+
+        info!(
+            "Renamed speaker '{}' ({:?} -> {}) for meeting {}: {} rows updated",
+            speaker, old_label, new_label, meeting_id, result.rows_affected()
+        );
+
+        Ok(result.rows_affected())
+    }
+
     /// Helper function to extract a snippet of text around the first match of a query.
     fn get_match_context(transcript: &str, query: &str) -> String {
         let transcript_lower = transcript.to_lowercase();

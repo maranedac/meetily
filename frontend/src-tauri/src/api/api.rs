@@ -30,6 +30,7 @@ pub struct ApiResponse<T> {
 pub struct Meeting {
     pub id: String,
     pub title: String,
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -360,6 +361,7 @@ pub async fn api_get_meetings<R: Runtime>(
                 .map(|m| Meeting {
                     id: m.id,
                     title: m.title,
+                    tag: m.tag,
                 })
                 .collect();
             Ok(result)
@@ -918,6 +920,44 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
     }
 }
 
+/// Renames one speaker identity within a meeting (e.g. "Speaker 1" -> "Exequiel",
+/// or the generic "You"/"Others" bucket -> a real name) to a name the user picks.
+/// See TranscriptsRepository::rename_speaker for exactly which rows this touches.
+#[tauri::command]
+pub async fn api_rename_speaker<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    speaker: String,
+    old_label: Option<String>,
+    new_label: String,
+) -> Result<u64, String> {
+    let new_label = new_label.trim();
+    if new_label.is_empty() {
+        return Err("New name cannot be empty".to_string());
+    }
+
+    log_info!(
+        "api_rename_speaker called for meeting_id: {}, speaker: {}, old_label: {:?}, new_label: {}",
+        meeting_id, speaker, old_label, new_label
+    );
+
+    let pool = state.db_manager.pool();
+
+    TranscriptsRepository::rename_speaker(
+        pool,
+        &meeting_id,
+        &speaker,
+        old_label.as_deref(),
+        new_label,
+    )
+    .await
+    .map_err(|e| {
+        log_error!("Failed to rename speaker for meeting {}: {}", meeting_id, e);
+        format!("Failed to rename speaker: {}", e)
+    })
+}
+
 #[tauri::command]
 pub async fn api_save_meeting_title<R: Runtime>(
     _app: AppHandle<R>,
@@ -946,6 +986,66 @@ pub async fn api_save_meeting_title<R: Runtime>(
             Err(format!("Failed to update meeting: {}", e))
         }
     }
+}
+
+/// Sets or clears a meeting's tag, used to group meetings in the sidebar's
+/// "Meeting Notes" list. Pass `tag: None` (or omit it) to clear back to untagged.
+#[tauri::command]
+pub async fn api_set_meeting_tag<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    tag: Option<String>,
+) -> Result<(), String> {
+    // Normalize "" (cleared input field) to None so both mean the same thing.
+    let tag = tag.and_then(|t| {
+        let trimmed = t.trim().to_string();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
+    });
+
+    log_info!(
+        "api_set_meeting_tag called for meeting_id: {}, tag: {:?}",
+        meeting_id, tag
+    );
+
+    let pool = state.db_manager.pool();
+    match MeetingsRepository::set_meeting_tag(pool, &meeting_id, tag.as_deref()).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!("No meeting found with id {}", meeting_id)),
+        Err(e) => {
+            log_error!("Failed to set tag for meeting {}: {}", meeting_id, e);
+            Err(format!("Failed to set meeting tag: {}", e))
+        }
+    }
+}
+
+/// Renames a tag across every meeting sharing it - the sidebar's "rename this
+/// group" action on a tag-folder header, as opposed to api_set_meeting_tag
+/// which only re-tags one meeting.
+#[tauri::command]
+pub async fn api_rename_meeting_tag<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    old_tag: String,
+    new_tag: String,
+) -> Result<u64, String> {
+    let new_tag = new_tag.trim();
+    if new_tag.is_empty() {
+        return Err("New tag name cannot be empty".to_string());
+    }
+
+    log_info!(
+        "api_rename_meeting_tag called: '{}' -> '{}'",
+        old_tag, new_tag
+    );
+
+    let pool = state.db_manager.pool();
+    MeetingsRepository::rename_tag(pool, &old_tag, new_tag)
+        .await
+        .map_err(|e| {
+            log_error!("Failed to rename tag '{}': {}", old_tag, e);
+            format!("Failed to rename tag: {}", e)
+        })
 }
 
 #[tauri::command]
@@ -1042,7 +1142,7 @@ pub async fn open_meeting_folder<R: Runtime>(
 
     // Get meeting with folder_path
     let meeting: Option<MeetingModel> = sqlx::query_as(
-        "SELECT id, title, created_at, updated_at, folder_path, transcription_status FROM meetings WHERE id = ?",
+        "SELECT id, title, created_at, updated_at, folder_path, transcription_status, tag FROM meetings WHERE id = ?",
     )
     .bind(&meeting_id)
     .fetch_optional(pool)

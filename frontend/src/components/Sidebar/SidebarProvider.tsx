@@ -17,6 +17,11 @@ interface SidebarItem {
 export interface CurrentMeeting {
   id: string;
   title: string;
+  // Optional single tag used to group meetings in the sidebar's "Meeting Notes"
+  // list (e.g. "Work", "Client X"). Undefined for untagged meetings, which are
+  // shown ungrouped, directly under "Meeting Notes" - so a user who never tags
+  // anything sees no change from before this feature existed.
+  tag?: string;
 }
 
 // Search result type for transcript search
@@ -86,10 +91,11 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const fetchMeetings = React.useCallback(async () => {
     if (serverAddress) {
       try {
-        const meetings = await invoke('api_get_meetings') as Array<{ id: string, title: string }>;
+        const meetings = await invoke('api_get_meetings') as Array<{ id: string, title: string, tag?: string | null }>;
         const transformedMeetings = meetings.map((meeting: any) => ({
           id: meeting.id,
-          title: meeting.title
+          title: meeting.title,
+          tag: meeting.tag ?? undefined,
         }));
         setMeetings(transformedMeetings);
         Analytics.trackBackendConnection(true);
@@ -113,14 +119,41 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     fetchSettings();
   }, []);
 
+  // Groups tagged meetings into per-tag sub-folders (alphabetical), leaving
+  // untagged ones directly under "Meeting Notes" as before - so tagging is
+  // purely additive/opt-in, with zero UI change for anyone who never uses it.
+  const buildGroupedMeetingItems = (meetings: CurrentMeeting[]): SidebarItem[] => {
+    const tagGroups = new Map<string, SidebarItem[]>();
+    const untagged: SidebarItem[] = [];
+
+    for (const meeting of meetings) {
+      const fileItem: SidebarItem = { id: meeting.id, title: meeting.title, type: 'file' as const };
+      if (meeting.tag) {
+        if (!tagGroups.has(meeting.tag)) tagGroups.set(meeting.tag, []);
+        tagGroups.get(meeting.tag)!.push(fileItem);
+      } else {
+        untagged.push(fileItem);
+      }
+    }
+
+    const tagFolders: SidebarItem[] = Array.from(tagGroups.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([tag, children]) => ({
+        id: `tag-${tag}`,
+        title: tag,
+        type: 'folder' as const,
+        children,
+      }));
+
+    return [...tagFolders, ...untagged];
+  };
+
   const baseItems: SidebarItem[] = [
     {
       id: 'meetings',
       title: 'Meeting Notes',
       type: 'folder' as const,
-      children: [
-        ...meetings.map(meeting => ({ id: meeting.id, title: meeting.title, type: 'file' as const }))
-      ]
+      children: buildGroupedMeetingItems(meetings)
     },
   ];
 
